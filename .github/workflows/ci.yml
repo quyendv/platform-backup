@@ -48,16 +48,26 @@ jobs:
               - 'backends/vault/**'
       - id: matrix
         env:
+          # Read each filter's own boolean output. The combined `changes`
+          # output is already a JSON string, and wrapping it in toJSON() double
+          # encodes it into "[]", which jq cannot iterate.
           SHARED: ${{ steps.filter.outputs.shared }}
-          CHANGED: ${{ toJSON(steps.filter.outputs.changes) }}
+          POSTGRESQL: ${{ steps.filter.outputs.postgresql }}
+          MONGODB: ${{ steps.filter.outputs.mongodb }}
+          ETCD: ${{ steps.filter.outputs.etcd }}
+          VAULT: ${{ steps.filter.outputs.vault }}
         run: |
+          set -euo pipefail
           # A change under lib/ or the bake file reaches every image, so it
           # rebuilds all four; otherwise only the backends that changed.
-          if [ "$SHARED" = "true" ]; then
-            backends='["postgresql","mongodb","etcd","vault"]'
-          else
-            backends=$(echo "$CHANGED" | jq -c '[.[] | select(. != "shared")]')
-          fi
+          selected=()
+          for backend in postgresql mongodb etcd vault; do
+            var="${backend^^}"
+            if [ "$SHARED" = "true" ] || [ "${!var}" = "true" ]; then
+              selected+=("$backend")
+            fi
+          done
+          backends=$(jq -cn '$ARGS.positional' --args ${selected[@]+"${selected[@]}"})
           echo "backends=$backends" >> "$GITHUB_OUTPUT"
           echo "Building: $backends"
 
