@@ -120,7 +120,7 @@ Timestamps are UTC. Every artifact carries a SHA-256 sidecar, and `fetch` and
 
 ```bash
 mise install          # pinned shellcheck, shfmt, hadolint, actionlint, bats
-mise run check        # format check, all linters, 78 unit tests — what CI runs
+mise run check        # format check, all linters, 79 unit tests — what CI runs
 mise run build        # build all images for the host architecture
 mise run test:integration   # real MinIO + Postgres + Mongo, backup→restore→verify
 ```
