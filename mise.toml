@@ -7,6 +7,7 @@ shfmt      = "3.14.1"
 hadolint   = "2.15.1"
 actionlint = "1.7.12"
 bats       = "1.14.0"
+pre-commit = "4.6.0"
 
 [env]
 SHELL_SOURCES = "entrypoint.sh lib backends test"
