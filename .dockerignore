@@ -1,0 +1,8 @@
+# The build context is the repository root, since every image copies lib/ and
+# entrypoint.sh. Only those, plus one backend.sh, are ever COPYed — everything
+# else is excluded so the context stays small and a docs edit does not
+# invalidate the build cache.
+*
+!lib/
+!entrypoint.sh
+!backends/*/backend.sh
