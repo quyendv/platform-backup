@@ -1,0 +1,39 @@
+# One-shot restore for vault. Reuses the CronJob's ConfigMap and Secret, so the
+# object store settings cannot drift between backup and restore.
+#
+# This replaces the entire Raft state and needs a token far more privileged than backup-raft.
+#
+#   kubectl apply -f backends/vault/k8s/restore-job.yaml
+#   kubectl logs -f job/vault-restore -n <your-namespace>
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-restore
+  namespace: <your-namespace>
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: restore
+          image: ghcr.io/quyendv/platform-backup/vault:latest
+          imagePullPolicy: Always
+          env:
+            - name: MODE
+              value: "restore"
+            # Empty selects the newest run; set YYYYMMDD_HHMMSS to pin one.
+            - name: RESTORE_TIMESTAMP
+              value: ""
+          envFrom:
+            - configMapRef:
+                name: vault-backup-config
+            - secretRef:
+                name: vault-backup-secret
+          volumeMounts:
+            - name: restore
+              mountPath: /restore
+      volumes:
+        - name: restore
+          emptyDir: {}

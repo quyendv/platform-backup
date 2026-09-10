@@ -1,0 +1,68 @@
+# Scheduled vault backup. Replace <your-namespace> and fill in the Secret.
+#
+#   kubectl apply -f backends/vault/k8s/cronjob.yaml
+#   kubectl create job --from=cronjob/vault-backup vault-backup-now -n <your-namespace>
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-backup-config
+  namespace: <your-namespace>
+data:
+  VAULT_ADDR: "http://vault.<your-namespace>.svc.cluster.local:8200"
+  S3_BUCKET: "your-bucket"
+  S3_PREFIX: "backups/vault"
+  AWS_REGION: "us-east-1"
+  # Required for MinIO / Ceph / R2 / Spaces; omit for real AWS.
+  AWS_ENDPOINT_URL_S3: "https://minio.example.com"
+  # Counts, not days. 0 disables pruning on that side.
+  KEEP_LOCAL: "3"
+  KEEP_REMOTE: "30"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-backup-secret
+  namespace: <your-namespace>
+type: Opaque
+stringData:
+  # A token with the backup-raft policy; see policies/backup-raft.hcl.
+  VAULT_TOKEN: ""
+  # Omit both keys entirely to authenticate with an IRSA service account.
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-backup
+  namespace: <your-namespace>
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      # A backup that cannot succeed should surface, not retry all day.
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: ghcr.io/quyendv/platform-backup/vault:latest
+              imagePullPolicy: Always
+              envFrom:
+                - configMapRef:
+                    name: vault-backup-config
+                - secretRef:
+                    name: vault-backup-secret
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            # Each Job gets a fresh pod, so the local copy is scratch space for
+            # this run only; KEEP_REMOTE is what actually retains history.
+            - name: backup
+              emptyDir: {}
