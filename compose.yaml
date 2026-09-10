@@ -1,0 +1,84 @@
+# One service per backend, behind profiles so they never start together.
+#
+#   cp backends/postgresql/.env.example backends/postgresql/.env
+#   docker compose --profile postgresql run --rm postgresql   # one-shot
+#   docker compose --profile postgresql up -d                 # scheduled
+#
+# Set SCHEDULE in the backend's .env for the scheduled form, and
+# RESTART_POLICY=unless-stopped so it survives a host reboot.
+
+x-backup: &backup
+  restart: ${RESTART_POLICY:-no}
+  environment:
+    RESTORE_DIR: /restore
+
+services:
+  postgresql:
+    <<: *backup
+    profiles: [postgresql]
+    image: ghcr.io/quyendv/platform-backup/postgresql:latest
+    build:
+      context: .
+      dockerfile: backends/postgresql/Dockerfile
+      args:
+        PG_VERSION: "17"
+    env_file:
+      - path: backends/postgresql/.env
+        required: false
+    volumes:
+      - postgresql_backup:/backup
+
+  mongodb:
+    <<: *backup
+    profiles: [mongodb]
+    image: ghcr.io/quyendv/platform-backup/mongodb:latest
+    build:
+      context: .
+      dockerfile: backends/mongodb/Dockerfile
+    env_file:
+      - path: backends/mongodb/.env
+        required: false
+    volumes:
+      - mongodb_backup:/backup
+
+  etcd:
+    <<: *backup
+    profiles: [etcd]
+    image: ghcr.io/quyendv/platform-backup/etcd:latest
+    build:
+      context: .
+      dockerfile: backends/etcd/Dockerfile
+    env_file:
+      - path: backends/etcd/.env
+        required: false
+    # etcd listens on the host, and its client certificates live there too.
+    network_mode: host
+    volumes:
+      - etcd_backup:/backup
+      - /etc/kubernetes/pki/etcd:/etc/kubernetes/pki/etcd:ro
+      # Kubespray instead of kubeadm: set ETCD_MODE=kubespray and mount
+      # - /etc/etcd.env:/etc/etcd.env:ro
+
+  vault:
+    <<: *backup
+    profiles: [vault]
+    image: ghcr.io/quyendv/platform-backup/vault:latest
+    build:
+      context: .
+      dockerfile: backends/vault/Dockerfile
+    env_file:
+      - path: backends/vault/.env
+        required: false
+    volumes:
+      - vault_backup:/backup
+      # With VAULT_TOKEN_FILE, mount the token:
+      # - ./secrets/backup-token:/etc/vault/backup-token:ro
+    extra_hosts:
+      # Lets VAULT_ADDR=http://host.docker.internal:8200 reach a Vault on the host.
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  postgresql_backup:
+  mongodb_backup:
+  etcd_backup:
+  vault_backup:
