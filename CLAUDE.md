@@ -112,8 +112,14 @@ CLI's actual surface needs `mise run test:integration`.
 `docker-bake.hcl` rebuilds all four.
 
 `release.yml` fires on a per-backend tag (`postgresql/v1.2.0`) and is the only
-place arm64 is built — emulated arm64 is slow and the postgres matrix multiplies
-it by four.
+place arm64 is *published* — emulated arm64 is slow and the postgres matrix
+multiplies it by four.
+
+Because nothing builds arm64 per-commit, it can rot silently. `mise run
+verify:arm` (or the manual `arm64` workflow) builds it and runs the tooling
+under emulation; do that before tagging, or after touching a Dockerfile.
+Building alone proves nothing — layers assemble for any architecture, so
+`test/smoke.sh` executes the actual binaries.
 
 ## History
 

@@ -121,6 +121,14 @@ do_restore() {
 
 main() {
   : "${MODE:=backup}"
+  # MODE is checked before anything else. Validating the backend first meant a
+  # typo in MODE surfaced as whatever env that backend happened to require,
+  # pointing at the wrong problem.
+  case "$MODE" in
+    backup | fetch | restore) ;;
+    *) die "Unknown MODE '${MODE}' (expected backup, fetch or restore)" ;;
+  esac
+
   _validate_common
   backend_validate
 
@@ -128,6 +136,5 @@ main() {
     backup) _with_lock do_backup ;;
     fetch) do_fetch ;;
     restore) do_restore ;;
-    *) die "Unknown MODE '${MODE}' (expected backup, fetch or restore)" ;;
   esac
 }

@@ -171,3 +171,18 @@ fake_backend() {
   run cat "$RESTORED_FROM"
   [ "$output" = "$RESTORE_DIR/20260101_000000/fake.dump" ]
 }
+
+# --- validation order --------------------------------------------------------
+
+@test "an unknown mode is reported before backend env validation" {
+  # Otherwise a typo in MODE hides behind whatever the backend happens to
+  # require: 'MODE=sideways' on an unconfigured Vault complained about
+  # VAULT_ADDR, which sends you looking in the wrong place.
+  backend_validate() { die "VAULT_ADDR is missing"; }
+
+  MODE=sideways run main
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"sideways"* ]]
+  [[ "$output" != *"VAULT_ADDR"* ]]
+}

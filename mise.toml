@@ -51,3 +51,33 @@ run = "test/integration/run.sh"
 [tasks.build]
 description = "Build all images for the host architecture"
 run = "docker buildx bake --load"
+
+# --- arm64 -------------------------------------------------------------------
+# arm64 is not built per-commit; only a release tag builds it, because emulated
+# builds are slow. These tasks are how you check it still works before tagging.
+
+[tasks."arm:setup"]
+description = "One-off: register arm64 emulation and create the multi-arch builder"
+# Registers qemu-aarch64 in the host's binfmt_misc. Undo with:
+#   docker run --privileged --rm tonistiigi/binfmt --uninstall qemu-aarch64
+run = """
+docker run --privileged --rm tonistiigi/binfmt --install arm64
+docker buildx inspect pb-arm >/dev/null 2>&1 ||   docker buildx create --name pb-arm --driver docker-container --bootstrap
+"""
+
+[tasks."build:arm"]
+description = "Build all images for linux/arm64 (run arm:setup first)"
+env = { PLATFORMS = "linux/arm64" }
+run = "docker buildx bake --builder pb-arm --load"
+
+[tasks.smoke]
+description = "Run every tool inside the built images and check the driver loads"
+run = "test/smoke.sh"
+
+[tasks."smoke:arm"]
+description = "Same, against the arm64 images"
+run = "test/smoke.sh --platform linux/arm64"
+
+[tasks."verify:arm"]
+description = "Build arm64 and prove the tooling runs there"
+depends = ["build:arm", "smoke:arm"]

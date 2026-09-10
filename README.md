@@ -128,6 +128,33 @@ mise run test:integration   # real MinIO + Postgres + Mongo, backup→restore→
 `mise run check` is exactly the command CI runs, against the same pinned tool
 versions.
 
+### Verifying arm64
+
+Images are multi-arch, but **arm64 is only built on a release tag** — emulated
+builds are slow and the postgres matrix multiplies that by four. So arm64 can
+break without CI noticing. Two ways to check before tagging:
+
+```bash
+mise run arm:setup     # one-off: registers qemu-aarch64, creates the builder
+mise run verify:arm    # build all four for arm64, then run their tooling
+```
+
+or trigger the **arm64** workflow from the Actions tab, which does the same on
+a runner and pushes nothing.
+
+Building is not the interesting part — layers assemble for any architecture.
+`test/smoke.sh` runs `pg_dump`, `mongodump`, `etcdctl`, `vault`, `aws` and
+`supercronic` inside the image under emulation, which is what actually catches
+a package with no build for that arch or a binary fetched for the wrong one.
+It works on amd64 too:
+
+```bash
+mise run build && mise run smoke
+```
+
+`mise run arm:setup` registers a qemu handler in the host's `binfmt_misc`.
+Undo with `docker run --privileged --rm tonistiigi/binfmt --uninstall qemu-aarch64`.
+
 ## Migrating from the separate repositories
 
 This replaces `quyendv/{postgresql,mongodb,etcd,vault}-backup`. The old images

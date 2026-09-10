@@ -1,0 +1,53 @@
+name: arm64
+
+# arm64 is not built on every commit: emulated builds are slow and this project
+# runs on amd64. Trigger this before tagging a release, or after touching a
+# Dockerfile, to confirm arm64 still builds and its tooling actually runs.
+#
+# Nothing is pushed. This only answers "does arm64 work".
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: Backend to verify
+        required: true
+        default: all
+        type: choice
+        options: [all, postgresql, mongodb, etcd, vault]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Build and smoke-test arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build for arm64
+        uses: docker/bake-action@v7
+        env:
+          PLATFORMS: linux/arm64
+        with:
+          # 'default' is the bake group containing every backend.
+          targets: ${{ inputs.backend == 'all' && 'default' || inputs.backend }}
+          load: true
+          push: false
+          set: |
+            *.cache-from=type=gha,scope=arm64-${{ inputs.backend }}
+            *.cache-to=type=gha,mode=max,scope=arm64-${{ inputs.backend }}
+
+      # Building only proves the layers assembled. This runs pg_dump, mongodump,
+      # etcdctl, vault, aws and supercronic under emulation, which is what
+      # catches a binary fetched for the wrong architecture.
+      - name: Smoke-test the tooling
+        run: |
+          if [ "${{ inputs.backend }}" = "all" ]; then
+            test/smoke.sh --platform linux/arm64
+          else
+            test/smoke.sh --platform linux/arm64 "${{ inputs.backend }}"
+          fi
