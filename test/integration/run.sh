@@ -2,7 +2,10 @@
 # End-to-end: seed a real target, back it up to a real MinIO, destroy the data,
 # restore it, and assert the data came back.
 #
-# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb)
+# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb vault)
+#
+# etcd is not covered here: it needs a real etcd with TLS on the host network,
+# and its restore runs outside the container by design. See docs/backends/etcd.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -128,9 +131,63 @@ test_mongodb() {
   pass "mongodb: data survived backup -> restore"
 }
 
+vault_exec() {
+  "${COMPOSE[@]}" exec -T -e VAULT_ADDR=http://127.0.0.1:8200 \
+    ${VAULT_TOKEN:+-e VAULT_TOKEN="$VAULT_TOKEN"} vault "$@"
+}
+
+test_vault() {
+  local image=ghcr.io/quyendv/platform-backup/vault:latest
+  local prefix=it/vault
+  local init unseal_key
+
+  info "vault: initialising raft storage"
+  init="$(vault_exec vault operator init -key-shares=1 -key-threshold=1 -format=json)"
+  unseal_key="$(printf '%s' "$init" | jq -r '.unseal_keys_b64[0]')"
+  VAULT_TOKEN="$(printf '%s' "$init" | jq -r '.root_token')"
+  vault_exec vault operator unseal "$unseal_key" >/dev/null
+
+  info "vault: seeding"
+  vault_exec vault secrets enable -path=secret kv-v2 >/dev/null
+  vault_exec vault kv put secret/widget name=alpha >/dev/null
+  [[ "$(vault_exec vault kv get -field=name secret/widget | tr -d '\r')" == "alpha" ]] ||
+    fail "vault: seed did not take"
+
+  local env=(-e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN="$VAULT_TOKEN")
+
+  info "vault: backup"
+  backup_image "$image" backup "$prefix" "${env[@]}" >/dev/null
+  s3_ls "s3://${BUCKET}/${prefix}/" | grep -qE 'PRE [0-9]{8}_[0-9]{6}/' ||
+    fail "vault: no run folder uploaded"
+  pass "vault: backup uploaded a run folder"
+
+  info "vault: destroying the data"
+  vault_exec vault kv metadata delete secret/widget >/dev/null
+  vault_exec vault kv get secret/widget >/dev/null 2>&1 &&
+    fail "vault: secret still readable after delete"
+
+  info "vault: restore"
+  backup_image "$image" restore "$prefix" "${env[@]}" >/dev/null
+
+  # A restore seals Vault; the snapshot came from this same cluster, so the
+  # original unseal key still applies.
+  info "vault: unsealing after restore"
+  local attempt=0
+  until vault_exec vault operator unseal "$unseal_key" >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    ((attempt < 30)) || fail "vault: still sealed 30s after restore"
+    sleep 1
+  done
+
+  local name
+  name="$(vault_exec vault kv get -field=name secret/widget | tr -d '\r')"
+  [[ "$name" == "alpha" ]] || fail "vault: expected 'alpha' after restore, got '${name}'"
+  pass "vault: data survived backup -> restore"
+}
+
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb vault)
 
   start_stack
   local b

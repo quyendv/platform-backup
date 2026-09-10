@@ -36,3 +36,36 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+
+  # Raft storage, not `vault server -dev`: dev mode uses in-memory storage and
+  # has no raft snapshots to take.
+  vault:
+    image: hashicorp/vault:1.18
+    cap_add: [IPC_LOCK]
+    # A fresh named volume is root-owned, and the image's entrypoint drops to
+    # uid 100 on its own. Start as root only long enough to chown the mount,
+    # then hand over to the normal entrypoint.
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - chown -R vault:vault /vault/data && exec docker-entrypoint.sh server
+    environment:
+      VAULT_ADDR: http://127.0.0.1:8200
+      VAULT_LOCAL_CONFIG: |
+        storage "raft" { path = "/vault/data", node_id = "it" }
+        listener "tcp" { address = "0.0.0.0:8200", tls_disable = true }
+        api_addr = "http://vault:8200"
+        cluster_addr = "http://vault:8201"
+        disable_mlock = true
+    healthcheck:
+      # `vault status` exits 2 while sealed, which is a healthy API here.
+      test: ["CMD-SHELL", "vault status >/dev/null 2>&1 || [ $$? -eq 2 ]"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      # raft needs a real directory; the image ships none.
+      - vault_data:/vault/data
+
+volumes:
+  vault_data:
