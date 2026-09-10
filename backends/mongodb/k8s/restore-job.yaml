@@ -1,0 +1,39 @@
+# One-shot restore for mongodb. Reuses the CronJob's ConfigMap and Secret, so the
+# object store settings cannot drift between backup and restore.
+#
+# Set RESTORE_DROP=true to pass --drop to mongorestore.
+#
+#   kubectl apply -f backends/mongodb/k8s/restore-job.yaml
+#   kubectl logs -f job/mongodb-restore -n <your-namespace>
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongodb-restore
+  namespace: <your-namespace>
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: restore
+          image: ghcr.io/quyendv/platform-backup/mongodb:latest
+          imagePullPolicy: Always
+          env:
+            - name: MODE
+              value: "restore"
+            # Empty selects the newest run; set YYYYMMDD_HHMMSS to pin one.
+            - name: RESTORE_TIMESTAMP
+              value: ""
+          envFrom:
+            - configMapRef:
+                name: mongodb-backup-config
+            - secretRef:
+                name: mongodb-backup-secret
+          volumeMounts:
+            - name: restore
+              mountPath: /restore
+      volumes:
+        - name: restore
+          emptyDir: {}
