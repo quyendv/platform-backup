@@ -4,10 +4,15 @@ on:
   pull_request:
   push:
     branches: [main, develop]
+  # Re-run against the current HEAD without an empty commit.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseding a pull request run is free; superseding a push to a branch is
+  # not, because that run publishes images. Two quick pushes to main would
+  # otherwise leave the newer commit's images unbuilt.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
