@@ -105,6 +105,15 @@ the command that gets built but not that it is *valid* — a stub happily accept
 `aws s3 ls --delimiter`, which the real CLI rejects. Anything touching the AWS
 CLI's actual surface needs `mise run test:integration`.
 
+## Branching
+
+`develop` is where work lands; `main` only ever moves by merging from `develop`.
+Never commit straight to `main` — it is the default branch and the one release
+tags are cut from.
+
+CI runs on both. Release tags are per-backend (`postgresql/v1.2.0`) and are cut
+from `main`.
+
 ## CI
 
 `ci.yml` runs `mise run check`, then builds only the backends a change touches
