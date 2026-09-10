@@ -1,0 +1,52 @@
+# Tool versions and task runner for platform-backup.
+# CI runs the very same tasks, so a green `mise run check` locally means a green CI.
+
+[tools]
+shellcheck = "0.11.0"
+shfmt      = "3.14.1"
+hadolint   = "2.15.1"
+actionlint = "1.7.12"
+bats       = "1.14.0"
+
+[env]
+SHELL_SOURCES = "entrypoint.sh lib backends test"
+
+[tasks.fmt]
+description = "Format every shell script in place"
+run = "shfmt -w -i 2 -ci $SHELL_SOURCES"
+
+[tasks."fmt:check"]
+description = "Fail if any shell script is unformatted"
+run = "shfmt -d -i 2 -ci $SHELL_SOURCES"
+
+[tasks."lint:sh"]
+description = "shellcheck every shell script, following sourced files"
+run = "shellcheck -x -P lib $(shfmt -f $SHELL_SOURCES)"
+
+[tasks."lint:docker"]
+description = "hadolint every backend Dockerfile"
+run = "hadolint backends/*/Dockerfile"
+
+[tasks."lint:ci"]
+description = "actionlint the GitHub workflows"
+run = "actionlint"
+
+[tasks.lint]
+description = "All linters"
+depends = ["lint:sh", "lint:docker", "lint:ci"]
+
+[tasks.check]
+description = "Everything CI runs on a pull request"
+depends = ["fmt:check", "lint", "test:unit"]
+
+[tasks."test:unit"]
+description = "bats unit tests for lib/"
+run = "bats --print-output-on-failure test/unit"
+
+[tasks."test:integration"]
+description = "End-to-end backup/fetch/restore against MinIO + real targets"
+run = "test/integration/run.sh"
+
+[tasks.build]
+description = "Build all images for the host architecture"
+run = "docker buildx bake --load"

@@ -1,0 +1,5 @@
+.env
+*.local
+/backup/
+/restore/
+.DS_Store

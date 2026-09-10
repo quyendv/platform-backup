@@ -1,0 +1,6 @@
+# Shell scripts must keep LF endings; the images execute them directly.
+*.sh        text eol=lf
+entrypoint.sh text eol=lf
+*.bats      text eol=lf
+*.env*      text eol=lf
+*.hcl       text eol=lf

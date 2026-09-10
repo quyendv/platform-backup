@@ -1,0 +1,6 @@
+ignored:
+  # These images intentionally track their distro's current package versions:
+  # they are rebuilt on every release, and pinning apt/apk versions would freeze
+  # security fixes for the database clients they exist to run.
+  - DL3008
+  - DL3018

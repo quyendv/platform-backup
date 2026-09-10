@@ -1,0 +1,20 @@
+# Catches formatting and secrets before a push, so CI rarely has to say no.
+repos:
+  - repo: local
+    hooks:
+      - id: shfmt
+        name: shfmt
+        entry: mise run fmt
+        language: system
+        pass_filenames: false
+        types: [shell]
+      - id: shellcheck
+        name: shellcheck
+        entry: mise run lint:sh
+        language: system
+        pass_filenames: false
+        types: [shell]
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

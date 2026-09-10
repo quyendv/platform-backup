@@ -1,0 +1,4 @@
+# The backend adapters expose hook functions (backend_dump, backend_restore, ...)
+# that lib/main.sh calls indirectly, and the bats suites define test doubles the
+# same way. SC2329 cannot see either, so it fires on every hook.
+disable=SC2329
