@@ -1,0 +1,39 @@
+# One-shot fetch for etcd. Reuses the CronJob's ConfigMap and Secret, so the
+# object store settings cannot drift between backup and fetch.
+#
+# etcd cannot be restored from a container: this only downloads the snapshot. Run etcdctl snapshot restore on each member host with etcd stopped.
+#
+#   kubectl apply -f backends/etcd/k8s/fetch-job.yaml
+#   kubectl logs -f job/etcd-fetch -n kube-system
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etcd-fetch
+  namespace: kube-system
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: fetch
+          image: ghcr.io/quyendv/platform-backup/etcd:latest
+          imagePullPolicy: Always
+          env:
+            - name: MODE
+              value: "fetch"
+            # Empty selects the newest run; set YYYYMMDD_HHMMSS to pin one.
+            - name: RESTORE_TIMESTAMP
+              value: ""
+          envFrom:
+            - configMapRef:
+                name: etcd-backup-config
+            - secretRef:
+                name: etcd-backup-secret
+          volumeMounts:
+            - name: restore
+              mountPath: /restore
+      volumes:
+        - name: restore
+          emptyDir: {}

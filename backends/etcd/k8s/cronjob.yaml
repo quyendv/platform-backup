@@ -1,0 +1,78 @@
+# Scheduled etcd backup.
+#
+# etcd runs on the control plane, listens on the host network, and its client
+# certificates live on the host filesystem — so unlike the other backends this
+# pod is pinned to a control-plane node and mounts those paths directly.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etcd-backup-config
+  namespace: kube-system
+data:
+  ETCD_MODE: "kubeadm"
+  S3_BUCKET: "your-bucket"
+  S3_PREFIX: "backups/etcd"
+  AWS_REGION: "us-east-1"
+  AWS_ENDPOINT_URL_S3: "https://minio.example.com"
+  KEEP_LOCAL: "3"
+  KEEP_REMOTE: "30"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: etcd-backup-secret
+  namespace: kube-system
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etcd-backup
+  namespace: kube-system
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          hostNetwork: true
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          containers:
+            - name: backup
+              image: ghcr.io/quyendv/platform-backup/etcd:latest
+              imagePullPolicy: Always
+              envFrom:
+                - configMapRef:
+                    name: etcd-backup-config
+                - secretRef:
+                    name: etcd-backup-secret
+              securityContext:
+                # etcd's server.key is root-readable only.
+                runAsUser: 0
+              volumeMounts:
+                - name: etcd-certs
+                  mountPath: /etc/kubernetes/pki/etcd
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: etcd-certs
+              hostPath:
+                path: /etc/kubernetes/pki/etcd
+                type: Directory
+            - name: backup
+              emptyDir: {}
