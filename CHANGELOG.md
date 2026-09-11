@@ -29,6 +29,12 @@ between minor versions. Each change will be listed here with its migration.
 
 - **A failed run left no record.** `die` exits, so running the dispatch in the
   same shell unwound past the reporting entirely.
+- **Fetch chose its artifact by directory order.** It took the first file
+  that was not a `.sha256`, which is not deterministic — the same run folder
+  selected a different file on a CI runner than it did locally. The checksum
+  sidecar now identifies the artifact, which also makes it the marker of a
+  complete run: half an upload is rejected up front instead of part-way
+  through a restore.
 - **Adapters could swallow a failed dump.** `backend_dump` ends by echoing the
   artifact filename, so the function's status reflected that echo rather than
   the dump, and errexit is disabled inside the tested context the driver calls

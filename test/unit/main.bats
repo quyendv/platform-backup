@@ -275,20 +275,34 @@ fake_backend() {
   [ "$(find "$BACKUP_DIR" -name '*.dump' | wc -l)" -eq 1 ]
 }
 
-@test "fetch copes with a run folder holding many files" {
-  # `find | head -n1` under pipefail: head exits first, find takes SIGPIPE and
-  # the pipeline returns 141. With two files find usually finishes in time, so
-  # this only shows up on a larger folder.
+@test "fetch picks the artifact by its checksum, not by directory order" {
+  # Choosing "the first file that is not a .sha256" depends on readdir order,
+  # which differs between machines: this passed locally and picked a padding
+  # file on CI.
   stub_aws_stdout "                           PRE 20260101_000000/"
   mkdir -p "$RESTORE_DIR/20260101_000000"
   local i
-  for i in $(seq 1 3000); do : >"$RESTORE_DIR/20260101_000000/pad-$i.bin"; done
-  printf 'payload' >"$RESTORE_DIR/20260101_000000/aaa-real.dump"
-  (cd "$RESTORE_DIR/20260101_000000" && sha256sum aaa-real.dump >aaa-real.dump.sha256)
+  for i in $(seq 1 200); do : >"$RESTORE_DIR/20260101_000000/pad-$i.bin"; done
+  printf 'payload' >"$RESTORE_DIR/20260101_000000/real.dump"
+  (cd "$RESTORE_DIR/20260101_000000" && sha256sum real.dump >real.dump.sha256)
 
   MODE=fetch S3_BUCKET=my-bucket run main
 
   [ "$status" -eq 0 ]
+  [[ "$output" == *"real.dump"* ]]
+  [[ "$output" != *"pad-"* ]]
+}
+
+@test "fetch refuses a run whose artifact is missing" {
+  # Half an upload: checksum there, artifact not.
+  stub_aws_stdout "                           PRE 20260101_000000/"
+  mkdir -p "$RESTORE_DIR/20260101_000000"
+  printf 'deadbeef  real.dump\n' >"$RESTORE_DIR/20260101_000000/real.dump.sha256"
+
+  MODE=fetch S3_BUCKET=my-bucket run main
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"incomplete"* ]]
 }
 
 @test "an invalid DRY_RUN is rejected rather than read as false" {

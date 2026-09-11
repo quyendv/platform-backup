@@ -145,12 +145,21 @@ _fetch_into() {
   log_info "Selected run ${run_id}"
   s3_download_run "$S3_PREFIX" "$run_id" "${dest}/${run_id}"
 
-  # -print -quit rather than a pipe into head: under pipefail, head closing the
-  # pipe early kills find with SIGPIPE and the whole pipeline returns 141. With
-  # two files find usually wins the race, which is exactly what makes it a bug
-  # that only appears once a run folder grows.
-  file="$(find "${dest}/${run_id}" -maxdepth 1 -type f ! -name '*.sha256' -print -quit)"
-  [[ -n "$file" ]] || die "Run ${run_id} contains no artifact"
+  # The checksum sidecar identifies the artifact. Picking "the first file that
+  # is not a .sha256" depended on directory order, which is not guaranteed —
+  # it chose a different file on a CI runner than it did locally. It also
+  # makes the sidecar the marker of a complete run: half an upload has one
+  # without the other, and is rejected here rather than part-way through a
+  # restore.
+  #
+  # -print -quit rather than a pipe into head: under pipefail, head closing
+  # the pipe early kills find with SIGPIPE and the pipeline returns 141.
+  local sum
+  sum="$(find "${dest}/${run_id}" -maxdepth 1 -type f -name '*.sha256' -print -quit)"
+  [[ -n "$sum" ]] || die "Run ${run_id} has no checksum; it is not a complete backup"
+  file="${sum%.sha256}"
+  [[ -f "$file" ]] ||
+    die "Run ${run_id} has a checksum but no artifact; the upload was incomplete"
   verify_checksum "$file" || die "Checksum verification failed for ${file}"
   log_ok "Verified $(basename "$file")"
   printf '%s' "$file"
