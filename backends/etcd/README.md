@@ -81,6 +81,6 @@ put it back once every member's data directory has been rebuilt. Set
 
 ## Kubernetes
 
-[`backends/etcd/k8s/`](../../backends/etcd/k8s/) has a CronJob pinned to a
+[`k8s/`](k8s/) has a CronJob pinned to a
 control-plane node with the etcd PKI mounted, and a fetch Job — not a restore
 Job, for the reason above.

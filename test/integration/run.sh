@@ -5,7 +5,7 @@
 # Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb vault schedule notify)
 #
 # etcd is not covered here: it needs a real etcd with TLS on the host network,
-# and its restore runs outside the container by design. See docs/backends/etcd.md.
+# and its restore runs outside the container by design. See backends/etcd/README.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

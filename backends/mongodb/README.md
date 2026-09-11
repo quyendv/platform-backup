@@ -37,5 +37,5 @@ same tools, pinned by `DBTOOLS_VERSION`.
 
 ## Kubernetes
 
-[`backends/mongodb/k8s/`](../../backends/mongodb/k8s/). `MONGODB_URI` contains
+[`k8s/`](k8s/). `MONGODB_URI` contains
 credentials, so it lives in the Secret rather than the ConfigMap.

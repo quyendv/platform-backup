@@ -15,9 +15,9 @@ restore its own data.
 | `ghcr.io/quyendv/platform-backup/etcd` | `latest` |
 | `ghcr.io/quyendv/platform-backup/vault` | `latest` |
 
-Per-backend documentation: [postgresql](docs/backends/postgresql.md) ·
-[mongodb](docs/backends/mongodb.md) · [etcd](docs/backends/etcd.md) ·
-[vault](docs/backends/vault.md)
+Each backend documents itself next to its own code:
+[postgresql](backends/postgresql/) · [mongodb](backends/mongodb/) ·
+[etcd](backends/etcd/) · [vault](backends/vault/)
 
 ## Quick start
 

@@ -16,7 +16,7 @@ for _m in log env retention checksum s3 local_store state notify; do
 done
 unset _m
 
-# Defaults. Documented in docs/backends/<name>.md and each .env.example.
+# Defaults. Documented in backends/<name>/README.md and each .env.example.
 : "${MODE:=backup}"
 : "${BACKUP_DIR:=/backup}"
 : "${RESTORE_DIR:=/restore}"

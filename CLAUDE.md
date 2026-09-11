@@ -120,7 +120,7 @@ already defaults to path-style; without one, virtual-hosted. Only
 `s3.addressing_style` in `~/.aws/config` can change it.
 
 Adding or renaming a variable means touching all of: the adapter or `lib/`, the
-backend's `.env.example`, its `k8s/*.yaml`, its `docs/backends/*.md`, and the
+backend's `.env.example`, its `k8s/*.yaml`, its `its own README.md`, and the
 table in `README.md`.
 
 ## Testing

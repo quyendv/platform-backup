@@ -88,6 +88,6 @@ plane node, with etcd stopped:
     --initial-advertise-peer-urls <peer-url> \
     --data-dir /var/lib/etcd
 
-Then start etcd again. See docs/backends/etcd.md.
+Then start etcd again. See backends/etcd/README.md.
 HINT
 }
