@@ -9,6 +9,40 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+### Added
+
+- **A state file.** Every run writes `${BACKUP_DIR}/.last-run.json` with its
+  outcome, backend, run id, error, exit code and duration.
+- **A container healthcheck.** A scheduled container whose backups fail used
+  to stay `Up` with exit code 0, the only evidence a line in the log. It now
+  reports `unhealthy`, which `docker ps`, restart policies and anything
+  watching container health can see. `HEALTHCHECK_MAX_AGE` additionally
+  catches a schedule that quietly stopped firing.
+- **Notifications** to Slack, Google Chat, Discord, Telegram, a structured
+  webhook and email over SMTP — any number at once, each enabled by its own
+  variables. `NOTIFY_ON` selects `never`, `change`, `failure` (default) or
+  `always`; `failure` includes the first success after a failure, so you learn
+  when the problem went away. A channel that fails is logged and skipped and
+  never changes a run's outcome.
+
+### Fixed
+
+- **A failed run left no record.** `die` exits, so running the dispatch in the
+  same shell unwound past the reporting entirely.
+- **Adapters could swallow a failed dump.** `backend_dump` ends by echoing the
+  artifact filename, so the function's status reflected that echo rather than
+  the dump, and errexit is disabled inside the tested context the driver calls
+  it from. A failed `pg_dump` was reported three steps later as "artifact too
+  small". Every adapter now checks its own tool.
+
+### Changed
+
+- The recorded error is the **first** one, not the last: the earliest is the
+  cause, everything after it is the driver unwinding.
+- `jq` is installed in all four images, for correct JSON in state, payloads
+  and the healthcheck.
+
+
 ## [0.1.0] — 2026-09-11
 
 First release of the consolidated repository. It replaces four separate
