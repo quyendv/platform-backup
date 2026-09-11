@@ -64,13 +64,39 @@ notify_channels() {
   return 0
 }
 
+_notify_status_word() {
+  case "$1" in
+    failure) printf 'FAILED' ;;
+    recovered) printf 'RECOVERED' ;;
+    *) printf 'SUCCEEDED' ;;
+  esac
+}
+
+# Red or green, so a chat history can be scanned without reading. Recovery is
+# green — it is good news — and the word carries the distinction.
+_notify_status_icon() {
+  case "$1" in
+    failure) printf '\xf0\x9f\x94\xb4' ;;
+    *) printf '\xf0\x9f\x9f\xa2' ;;
+  esac
+}
+
+# "55 sec" and "62 min 5 sec" rather than raw seconds.
+_notify_duration() {
+  local s="${1:-0}"
+  [[ "$s" =~ ^[0-9]+$ ]] || s=0
+  if ((s < 60)); then
+    printf '%d sec' "$s"
+  else
+    printf '%d min %d sec' $((s / 60)) $((s % 60))
+  fi
+}
+
+# Email subject: scannable in an inbox list, and plain so no client mangles it.
 _notify_subject() {
   local outcome="$1" backend="$2"
-  case "$outcome" in
-    failure) printf '[BACKUP FAILED] %s' "$backend" ;;
-    recovered) printf '[BACKUP RECOVERED] %s' "$backend" ;;
-    *) printf '[BACKUP OK] %s' "$backend" ;;
-  esac
+  printf '[%s] %s backup on %s' \
+    "$(_notify_status_word "$outcome")" "$backend" "$(hostname)"
 }
 
 _notify_truncate() {
@@ -82,13 +108,57 @@ _notify_truncate() {
   fi
 }
 
-_notify_text() {
-  local outcome="$1" backend="$2" run_id="$3" error="$4" exit_code="$5"
-  printf '%s\nhost: %s\nrun: %s' \
-    "$(_notify_subject "$outcome" "$backend")" "$(hostname)" "${run_id:-n/a}"
-  [[ "$outcome" == "failure" ]] &&
-    printf '\nexit: %s\nerror: %s' "$exit_code" \
-      "$(_notify_truncate "${error:-unknown}" "$NOTIFY_MAX_ERROR_CHARS")"
+# Telegram answers 400 "can't parse entities" on a stray < or &, so HTML mode
+# means escaping is not optional.
+# sed, not ${var//}: since bash 5.2 an unescaped & in the replacement means
+# "the text that matched", so ${t//</&lt;} produces "<lt;" rather than "&lt;"
+# — and Telegram then rejects the message it cannot parse.
+_notify_escape_html() {
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# The body is rendered from _N_* rather than a dozen positional arguments.
+# notify_run sets them; every renderer reads the same set.
+#
+# _notify_body FLAVOUR   plain | html | markdown
+#   plain     email, and anything that shows text verbatim
+#   html      Telegram, far easier to escape correctly than MarkdownV2
+#   markdown  Slack, Discord and Google Chat, which all fence with backticks
+#
+# Layout follows the shape people already read in build notifications: an
+# icon-and-status header, a blank line, then one aligned field per line.
+_notify_body() {
+  local flavour="$1" header error fence='```'
+
+  header="$(printf '%s %s \xe2\x80\xba %s \xe2\x80\x94 %s' \
+    "$(_notify_status_icon "$_N_OUTCOME")" "$(hostname)" \
+    "$_N_BACKEND" "$(_notify_status_word "$_N_OUTCOME")")"
+
+  case "$flavour" in
+    html) header="<b>$(_notify_escape_html "$header")</b>" ;;
+    markdown) header="*${header}*" ;;
+  esac
+
+  printf '%s\n\n' "$header"
+  # Padded to the longest key so the colons line up.
+  printf '%-8s: %s UTC\n' 'Run' "${_N_RUN_ID:-n/a}"
+  printf '%-8s: %s\n' 'Target' "${_N_TARGET:-unknown}"
+  printf '%-8s: %s' 'Duration' "$(_notify_duration "${_N_DURATION:-0}")"
+
+  [[ "$_N_OUTCOME" == "failure" ]] || return 0
+
+  error="$(_notify_truncate "${_N_ERROR:-unknown}" "$NOTIFY_MAX_ERROR_CHARS")"
+  printf '\n%-8s: %s\n' 'Exit' "${_N_EXIT:-1}"
+  printf '%-8s:\n' 'Error'
+  case "$flavour" in
+    html) printf '<pre>%s</pre>' "$(_notify_escape_html "$error")" ;;
+    markdown)
+      # A fence inside the error would close the block early and leak the
+      # rest as prose.
+      printf '%s\n%s\n%s' "$fence" "${error//"$fence"/\'\'\'}" "$fence"
+      ;;
+    *) printf '%s' "$error" | sed 's/^/  /' ;;
+  esac
   return 0
 }
 
@@ -104,38 +174,50 @@ _notify_post_json() {
 
 _notify_slack() {
   _notify_post_json slack "$NOTIFY_SLACK_WEBHOOK_URL" \
-    "$(jq -n --arg t "$1" '{text: $t}')"
+    "$(jq -cn --arg t "$(_notify_body markdown)" '{text: $t}')"
 }
 
 _notify_google_chat() {
   _notify_post_json google_chat "$NOTIFY_GOOGLE_CHAT_WEBHOOK_URL" \
-    "$(jq -n --arg t "$1" '{text: $t}')"
+    "$(jq -cn --arg t "$(_notify_body markdown)" '{text: $t}')"
 }
 
 _notify_discord() {
   _notify_post_json discord "$NOTIFY_DISCORD_WEBHOOK_URL" \
-    "$(jq -n --arg t "$1" '{content: $t}')"
+    "$(jq -cn --arg t "$(_notify_body markdown)" '{content: $t}')"
 }
 
 _notify_telegram() {
-  local text="$1"
   _notify_post_json telegram \
     "${NOTIFY_TELEGRAM_API_BASE}/bot${NOTIFY_TELEGRAM_BOT_TOKEN}/sendMessage" \
-    "$(jq -n --arg c "$NOTIFY_TELEGRAM_CHAT_ID" --arg t "$text" \
-      '{chat_id: $c, text: $t}')"
+    "$(jq -cn --arg c "$NOTIFY_TELEGRAM_CHAT_ID" --arg t "$(_notify_body html)" \
+      '{chat_id: $c, text: $t, parse_mode: "HTML"}')"
 }
 
-# Structured, not prose: this one feeds other software.
+# One host backing several databases to different prefixes needs this to tell
+# the messages apart.
+_notify_target() {
+  if [[ -n "${S3_BUCKET:-}" ]]; then
+    printf 's3://%s/%s' "$S3_BUCKET" "${S3_PREFIX:-}"
+  else
+    printf 'local only (%s)' "${BACKUP_DIR:-/backup}"
+  fi
+}
+
+# Structured, not prose: this one feeds other software, so it gets the full
+# error and no markup.
 _notify_webhook() {
-  local outcome="$1" backend="$2" run_id="$3" error="$4" exit_code="$5"
   _notify_post_json webhook "$NOTIFY_WEBHOOK_URL" \
     "$(jq -cn \
-      --arg outcome "$outcome" --arg backend "$backend" --arg run_id "$run_id" \
-      --arg error "$error" --arg host "$(hostname)" \
+      --arg outcome "$_N_OUTCOME" --arg backend "$_N_BACKEND" \
+      --arg run_id "$_N_RUN_ID" --arg error "$_N_ERROR" \
+      --arg target "$_N_TARGET" --arg host "$(hostname)" \
       --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-      --argjson exit_code "$exit_code" \
+      --argjson exit_code "${_N_EXIT:-0}" \
+      --argjson duration_s "${_N_DURATION:-0}" \
       '{schema: 1, outcome: $outcome, backend: $backend, run_id: $run_id,
-        error: $error, exit_code: $exit_code, host: $host, at: $at}')"
+        target: $target, error: $error, exit_code: $exit_code,
+        duration_s: $duration_s, host: $host, at: $at}')"
 }
 
 # curl speaks SMTP, so email needs no dependency the image does not already
@@ -143,7 +225,9 @@ _notify_webhook() {
 # URL handed to --url and passed through --user instead, so the endpoint can
 # be logged safely.
 _notify_smtp() {
-  local subject="$1" body="$2"
+  local subject body
+  subject="$(_notify_subject "$_N_OUTCOME" "$_N_BACKEND")"
+  body="$(_notify_body plain)"
   local url="$NOTIFY_SMTP_URL" creds="" host_part msg
 
   host_part="${url#*://}"
@@ -182,21 +266,29 @@ _notify_smtp() {
 # notify_run OUTCOME BACKEND RUN_ID ERROR EXIT_CODE PREVIOUS_OUTCOME
 # Always returns 0. A backup that worked stays worked even if every channel is
 # unreachable.
+# notify_run OUTCOME BACKEND RUN_ID ERROR EXIT_CODE PREVIOUS_OUTCOME [DURATION]
+# Always returns 0. A backup that worked stays worked even if every channel is
+# unreachable.
 notify_run() {
   local outcome="$1" backend="$2" run_id="$3" error="$4" exit_code="$5"
-  local previous="${6:-none}"
-  local channels label subject text channel
+  local previous="${6:-none}" duration="${7:-0}"
+  local channels channel
 
   notify_should_send "$outcome" "$previous" || return 0
 
   channels="$(notify_channels)"
   [[ -n "$channels" ]] || return 0
 
-  label="$outcome"
-  [[ "$outcome" == "success" && "$previous" == "failure" ]] && label=recovered
-
-  subject="$(_notify_subject "$label" "$backend")"
-  text="$(_notify_text "$label" "$backend" "$run_id" "$error" "$exit_code")"
+  # "recovered" is a presentation state, not an outcome: the run succeeded,
+  # and what makes it notable is that the one before it did not.
+  _N_OUTCOME="$outcome"
+  [[ "$outcome" == "success" && "$previous" == "failure" ]] && _N_OUTCOME=recovered
+  _N_BACKEND="$backend"
+  _N_RUN_ID="$run_id"
+  _N_ERROR="$error"
+  _N_EXIT="$exit_code"
+  _N_DURATION="$duration"
+  _N_TARGET="$(_notify_target)"
 
   while IFS= read -r channel; do
     [[ -n "$channel" ]] || continue
@@ -204,12 +296,12 @@ notify_run() {
     # of the notifications, or the run, with it.
     (
       case "$channel" in
-        slack) _notify_slack "$text" ;;
-        google_chat) _notify_google_chat "$text" ;;
-        discord) _notify_discord "$text" ;;
-        telegram) _notify_telegram "$text" ;;
-        webhook) _notify_webhook "$label" "$backend" "$run_id" "$error" "$exit_code" ;;
-        smtp) _notify_smtp "$subject" "$text" ;;
+        slack) _notify_slack ;;
+        google_chat) _notify_google_chat ;;
+        discord) _notify_discord ;;
+        telegram) _notify_telegram ;;
+        webhook) _notify_webhook ;;
+        smtp) _notify_smtp ;;
       esac
     ) || log_warn "Notification via ${channel} raised an error"
   done <<<"$channels"

@@ -131,6 +131,27 @@ changes the outcome of a backup.
 | Webhook (structured JSON) | `NOTIFY_WEBHOOK_URL` |
 | Email | `NOTIFY_SMTP_URL` + `NOTIFY_SMTP_FROM` + `NOTIFY_SMTP_TO` |
 
+Messages are rendered per channel — HTML for Telegram, fenced markdown for
+Slack, Discord and Google Chat, plain text for email — and read the same
+everywhere:
+
+```
+🔴 db-prod-01 › postgresql — FAILED
+
+Run     : 20260911_020000 UTC
+Target  : s3://backups/prod/postgresql
+Duration: 12 sec
+Exit    : 1
+Error   :
+  pg_dump: error: connection to server at "db.internal" (10.0.0.5), port
+  5432 failed: FATAL: password authentication failed for user "backup"
+```
+
+Chat services cap message length — Telegram rejects anything over 4096
+characters outright — so the error is truncated there at
+`NOTIFY_MAX_ERROR_CHARS` and marked as such. The webhook and email keep it
+whole.
+
 `NOTIFY_ON` decides when: `never`, `change` (transitions only), `failure`
 (default — every failure, plus the recovery) or `always`. The recovery message
 matters more than it sounds: without it you never learn the problem went away.

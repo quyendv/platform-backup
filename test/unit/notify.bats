@@ -230,3 +230,150 @@ long_error() { head -c 6000 /dev/zero | tr '\0' 'E'; }
   [[ "$output" == *"disk full"* ]]
   [[ "$output" != *"truncated"* ]]
 }
+
+# --- message content ---------------------------------------------------------
+
+render() {
+  _N_OUTCOME="${1:-failure}" _N_BACKEND="${2:-postgresql}" \
+    _N_RUN_ID="${3:-20260911_020000}" _N_ERROR="${4:-boom}" \
+    _N_EXIT=3 _N_DURATION=12 _N_TARGET="s3://bk/backups/pg" \
+    _notify_body "${5:-plain}"
+}
+
+@test "the body names where the backup was going" {
+  # One host backing several databases to different prefixes needs this to
+  # tell the messages apart.
+  run render failure postgresql 20260911_020000 boom plain
+
+  [[ "$output" == *"s3://bk/backups/pg"* ]]
+}
+
+@test "the body reports how long the run took, in words" {
+  run render success postgresql 20260911_020000 '' plain
+
+  [[ "$output" == *"12 sec"* ]]
+}
+
+@test "a long run reads as minutes and seconds" {
+  _N_OUTCOME=success _N_BACKEND=pg _N_RUN_ID=x _N_ERROR='' _N_EXIT=0 \
+    _N_DURATION=3725 _N_TARGET=t run _notify_body plain
+
+  [[ "$output" == *"62 min 5 sec"* ]]
+}
+
+@test "the header carries a status icon and word, and stands on its own line" {
+  run render failure postgresql 20260911_020000 boom plain
+  [[ "${lines[0]}" == *"FAILED"* ]]
+  [[ "${lines[0]}" == *"postgresql"* ]]
+  # $lines collapses blank lines, so the separator is checked on $output.
+  [[ "$output" == *$'FAILED\n\n'* ]]
+
+  run render success postgresql 20260911_020000 '' plain
+  [[ "${lines[0]}" == *"SUCCEEDED"* ]]
+
+  run render recovered postgresql 20260911_020000 '' plain
+  [[ "${lines[0]}" == *"RECOVERED"* ]]
+}
+
+@test "a failure and a success are distinguishable at a glance" {
+  run render failure postgresql 20260911_020000 boom plain
+  local failed="${lines[0]}"
+  run render success postgresql 20260911_020000 '' plain
+
+  [ "$failed" != "${lines[0]}" ]
+  [[ "$failed" != "${lines[0]}" ]]
+}
+
+@test "the fields line up in a column" {
+  run render failure postgresql 20260911_020000 boom plain
+
+  # Every "Key     : value" line puts its colon in the same place.
+  local cols
+  cols="$(grep -oE '^[A-Za-z]+ *:' <<<"$output" | awk '{print length($0)}' | sort -u | wc -l)"
+  [ "$cols" -eq 1 ]
+}
+
+@test "the run timestamp is marked UTC" {
+  # 20260911_020000 reads as local time otherwise.
+  run render success postgresql 20260911_020000 '' plain
+
+  [[ "$output" == *"20260911_020000"* ]]
+  [[ "$output" == *"UTC"* ]]
+}
+
+@test "plain text carries no markup" {
+  run render failure postgresql 20260911_020000 'boom' plain
+
+  [[ "$output" != *'<pre>'* ]]
+  [[ "$output" != *'```'* ]]
+}
+
+# --- per-channel rendering ---------------------------------------------------
+
+@test "html escapes the characters that would break Telegram's parser" {
+  # Telegram answers 400 "can't parse entities" on a stray < or &.
+  run render failure postgresql 20260911_020000 'a < b && c > d' html
+
+  [[ "$output" == *'&lt;'* ]]
+  [[ "$output" == *'&amp;'* ]]
+  [[ "$output" == *'&gt;'* ]]
+  [[ "$output" != *'a < b'* ]]
+}
+
+@test "html puts the error in a pre block" {
+  run render failure postgresql 20260911_020000 'boom' html
+
+  [[ "$output" == *'<pre>'* ]]
+  [[ "$output" == *'</pre>'* ]]
+}
+
+@test "markdown fences the error" {
+  run render failure postgresql 20260911_020000 'boom' markdown
+
+  [[ "$output" == *'```'* ]]
+}
+
+@test "a backtick in the error cannot break the fence" {
+  run render failure postgresql 20260911_020000 'oops ``` here' markdown
+
+  # Exactly one opening and one closing fence.
+  [ "$(grep -o '```' <<<"$output" | wc -l)" -eq 2 ]
+}
+
+@test "a success message has no error block at all" {
+  run render success postgresql 20260911_020000 '' html
+
+  [[ "$output" != *'<pre>'* ]]
+}
+
+# --- what each channel actually sends ----------------------------------------
+
+@test "telegram asks for HTML parsing" {
+  NOTIFY_TELEGRAM_BOT_TOKEN=abc NOTIFY_TELEGRAM_CHAT_ID=42 \
+    NOTIFY_TELEGRAM_API_BASE=https://tg.test \
+    notify_run failure etcd 20260101_000000 'a < b' 3 success 12
+
+  run calls
+  [[ "$output" == *'"parse_mode":"HTML"'* ]]
+  [[ "$output" == *'&lt;'* ]]
+}
+
+@test "slack and discord get fenced markdown, not HTML" {
+  NOTIFY_SLACK_WEBHOOK_URL=https://hooks.example/s \
+    NOTIFY_DISCORD_WEBHOOK_URL=https://discord.example/d \
+    notify_run failure etcd 20260101_000000 'boom' 3 success 12
+
+  run calls
+  [[ "$output" != *'<pre>'* ]]
+  [[ "$output" == *'`'* ]]
+}
+
+@test "the webhook still carries fields, never markup" {
+  NOTIFY_WEBHOOK_URL=https://hook.example/w \
+    notify_run failure etcd 20260101_000000 'boom' 3 success 12
+
+  run calls
+  [[ "$output" == *'"duration_s":12'* ]]
+  [[ "$output" != *'```'* ]]
+  [[ "$output" != *'<pre>'* ]]
+}
