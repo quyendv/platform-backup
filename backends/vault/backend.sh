@@ -29,6 +29,11 @@ backend_dump() {
   printf '%s' "$name"
 }
 
+# The snapshot is gzipped; gzip -t catches a truncated write.
+backend_verify() {
+  gzip -t "$1"
+}
+
 backend_restore() {
   local file="$1" snap="${1%.gz}"
 

@@ -22,6 +22,12 @@ backend_dump() {
   printf '%s' "$name"
 }
 
+# mongodump writes a gzip stream; a truncated upload or a dump that died
+# halfway fails the integrity check.
+backend_verify() {
+  gzip -t "$1"
+}
+
 backend_restore() {
   local file="$1"
   local args=(--uri="$MONGODB_URI" --gzip --archive="$file")

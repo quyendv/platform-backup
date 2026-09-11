@@ -34,7 +34,7 @@ backend_supports() {
 _validate_common() {
   require_int KEEP_LOCAL
   require_int KEEP_REMOTE
-  parse_bool "$DRY_RUN" || [[ $? -eq 1 ]] || die "DRY_RUN must be a boolean"
+  bool_is_true DRY_RUN || true
   : "${S3_PREFIX:=backups/$(backend_name)}"
 }
 
@@ -45,29 +45,80 @@ _require_bucket() {
 # Only one backup may run at a time per backup directory: a schedule that fires
 # faster than a dump completes would otherwise interleave two runs.
 _with_lock() {
-  local lock="${BACKUP_DIR}/.lock"
+  local lock="${BACKUP_DIR}/.lock" rc=0
   mkdir -p "$BACKUP_DIR"
   exec 200>"$lock"
   flock -n 200 || die "Another run holds the lock at ${lock}"
-  "$@"
+  "$@" || rc=$?
+  # Release explicitly. Leaving the descriptor open holds the lock for the
+  # lifetime of the process, which blocks any later run in the same shell.
+  exec 200>&-
+  return "$rc"
 }
 
+# Discards a run that never became a backup. Called explicitly at each failure
+# point rather than from a trap: a RETURN trap fires on every function return,
+# and an EXIT trap would clobber whatever the caller installed.
+_discard_staging() {
+  local staging="$1"
+  log_warn "Discarding incomplete run ${staging##*/.staging-}"
+  rm -rf -- "$staging"
+}
+
+# A floor only catches "the tool produced essentially nothing". It deliberately
+# does not try to catch corruption: a real pg_dump of an empty database gzips
+# to about 405 bytes, so any floor high enough to notice a truncated dump also
+# rejects a legitimate backup. Integrity is backend_verify's job.
+: "${MIN_ARTIFACT_BYTES:=128}"
+
+# A run is assembled under .staging-<id> and moved into place only once the
+# artifact exists, is big enough and has a checksum. Nothing that fails is ever
+# visible as a run directory.
+#
+# This matters more than it looks: prune keeps the newest N run directories, so
+# when a failed run left an empty directory behind, a few failures in a row
+# evicted every good backup that came before them.
 do_backup() {
-  local run_dir artifact path size
+  local staging run_dir artifact path size
   RUN_ID="$(date -u '+%Y%m%d_%H%M%S')"
+  staging="${BACKUP_DIR}/.staging-${RUN_ID}"
   run_dir="${BACKUP_DIR}/${RUN_ID}"
-  mkdir -p "$run_dir"
+
+  # The lock guarantees no other run is active, so any staging directory here
+  # belongs to a run that died and is safe to clear.
+  rm -rf -- "${BACKUP_DIR:?}"/.staging-*
+  mkdir -p "$staging"
 
   log_info "Backup run ${RUN_ID} for $(backend_name)"
-  artifact="$(backend_dump "$run_dir")"
-  path="${run_dir}/${artifact}"
+  artifact="$(backend_dump "$staging")" ||
+    { _discard_staging "$staging" && die "$(backend_name) dump failed"; }
+  path="${staging}/${artifact}"
 
-  [[ -f "$path" ]] || die "Backend reported ${artifact} but no such file was produced"
+  [[ -f "$path" ]] ||
+    { _discard_staging "$staging" && die "Backend reported ${artifact} but no such file was produced"; }
   size="$(stat -c%s "$path")"
-  ((size > 0)) || die "Backup artifact is empty: ${artifact}"
+  ((size >= MIN_ARTIFACT_BYTES)) ||
+    { _discard_staging "$staging" && die "Backup artifact is implausibly small (${size} bytes, minimum ${MIN_ARTIFACT_BYTES}): ${artifact}"; }
   log_ok "Artifact ${artifact} (${size} bytes)"
 
-  write_checksum "$path"
+  # Optional per-backend integrity check — a truncated archive is the realistic
+  # failure, and only the backend's own tooling can spot it.
+  if declare -F backend_verify >/dev/null; then
+    backend_verify "$path" ||
+      { _discard_staging "$staging" && die "Artifact failed $(backend_name) verification: ${artifact}"; }
+    log_ok "Verified ${artifact}"
+  fi
+
+  write_checksum "$path" ||
+    { _discard_staging "$staging" && die "Could not checksum ${artifact}"; }
+
+  # Promotion. After this the run is a real backup; before it, nothing is.
+  # Refuse rather than merge: mv into an existing directory would nest the
+  # staging directory inside it, which is how two runs in the same second used
+  # to corrupt a run folder.
+  [[ ! -e "$run_dir" ]] ||
+    { _discard_staging "$staging" && die "A run already exists at ${run_dir}"; }
+  mv -- "$staging" "$run_dir"
 
   if s3_enabled; then
     s3_upload_run "$run_dir" "$S3_PREFIX" "$RUN_ID"
@@ -77,7 +128,9 @@ do_backup() {
   fi
 
   prune_local "$BACKUP_DIR" "$KEEP_LOCAL"
-  s3_enabled && prune_remote "$S3_PREFIX" "$KEEP_REMOTE"
+  if s3_enabled; then
+    prune_remote "$S3_PREFIX" "$KEEP_REMOTE"
+  fi
   log_ok "Backup run ${RUN_ID} complete"
 }
 
@@ -89,7 +142,11 @@ _fetch_into() {
   log_info "Selected run ${run_id}"
   s3_download_run "$S3_PREFIX" "$run_id" "${dest}/${run_id}"
 
-  file="$(find "${dest}/${run_id}" -maxdepth 1 -type f ! -name '*.sha256' | head -n1)"
+  # -print -quit rather than a pipe into head: under pipefail, head closing the
+  # pipe early kills find with SIGPIPE and the whole pipeline returns 141. With
+  # two files find usually wins the race, which is exactly what makes it a bug
+  # that only appears once a run folder grows.
+  file="$(find "${dest}/${run_id}" -maxdepth 1 -type f ! -name '*.sha256' -print -quit)"
   [[ -n "$file" ]] || die "Run ${run_id} contains no artifact"
   verify_checksum "$file" || die "Checksum verification failed for ${file}"
   log_ok "Verified $(basename "$file")"
