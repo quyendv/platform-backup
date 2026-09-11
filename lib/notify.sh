@@ -15,6 +15,11 @@
 : "${NOTIFY_ON:=failure}"
 : "${NOTIFY_TIMEOUT:=15}"
 : "${NOTIFY_TELEGRAM_API_BASE:=https://api.telegram.org}"
+# Chat services cap message length — Telegram rejects over 4096 with a 400,
+# Discord over 2000 — and a verbose dump failure is exactly when the message
+# matters most. The error is capped for chat; the webhook and email keep it
+# whole, because those are read by machines and by people who can scroll.
+: "${NOTIFY_MAX_ERROR_CHARS:=900}"
 
 # notify_should_send OUTCOME PREVIOUS_OUTCOME
 #   0 send, 1 stay quiet, 2 misconfigured
@@ -68,12 +73,22 @@ _notify_subject() {
   esac
 }
 
+_notify_truncate() {
+  local text="$1" limit="$2"
+  if ((${#text} > limit)); then
+    printf '%s… (truncated, %d characters)' "${text:0:limit}" "${#text}"
+  else
+    printf '%s' "$text"
+  fi
+}
+
 _notify_text() {
   local outcome="$1" backend="$2" run_id="$3" error="$4" exit_code="$5"
   printf '%s\nhost: %s\nrun: %s' \
     "$(_notify_subject "$outcome" "$backend")" "$(hostname)" "${run_id:-n/a}"
   [[ "$outcome" == "failure" ]] &&
-    printf '\nexit: %s\nerror: %s' "$exit_code" "${error:-unknown}"
+    printf '\nexit: %s\nerror: %s' "$exit_code" \
+      "$(_notify_truncate "${error:-unknown}" "$NOTIFY_MAX_ERROR_CHARS")"
   return 0
 }
 

@@ -187,3 +187,46 @@ calls() { cat "$CURL_CALLS"; }
   run calls
   [[ "$output" == *"--max-time"* ]]
 }
+
+# --- long errors must not lose the notification ------------------------------
+# Telegram rejects a message over 4096 characters with 400, and Discord over
+# 2000. A verbose dump failure is exactly when the message matters most, so
+# the chat text is capped while machine-readable channels keep the full text.
+
+long_error() { head -c 6000 /dev/zero | tr '\0' 'E'; }
+
+@test "a long error is truncated in the chat message" {
+  NOTIFY_TELEGRAM_BOT_TOKEN=abc NOTIFY_TELEGRAM_CHAT_ID=42 \
+    NOTIFY_TELEGRAM_API_BASE=https://tg.test \
+    notify_run failure etcd 20260101_000000 "$(long_error)" 3 success
+
+  run calls
+  [ "${#output}" -lt 4096 ]
+  [[ "$output" == *"truncated"* ]]
+}
+
+@test "discord stays inside its smaller limit too" {
+  NOTIFY_DISCORD_WEBHOOK_URL=https://discord.example/d \
+    notify_run failure etcd 20260101_000000 "$(long_error)" 3 success
+
+  run calls
+  [ "${#output}" -lt 2000 ]
+}
+
+@test "the webhook keeps the full error for machines to read" {
+  NOTIFY_WEBHOOK_URL=https://hook.example/w \
+    notify_run failure etcd 20260101_000000 "$(long_error)" 3 success
+
+  run calls
+  [ "${#output}" -gt 5000 ]
+}
+
+@test "a short error is left exactly as it is" {
+  NOTIFY_TELEGRAM_BOT_TOKEN=abc NOTIFY_TELEGRAM_CHAT_ID=42 \
+    NOTIFY_TELEGRAM_API_BASE=https://tg.test \
+    notify_run failure etcd 20260101_000000 'disk full' 3 success
+
+  run calls
+  [[ "$output" == *"disk full"* ]]
+  [[ "$output" != *"truncated"* ]]
+}
