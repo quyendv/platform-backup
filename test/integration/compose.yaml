@@ -1,10 +1,12 @@
 # Real targets plus a real S3 implementation. Nothing here is mocked: the point
 # is to prove backup -> fetch -> restore round-trips actual data.
+# Every image is pinned. A moving tag in a test fixture turns an unrelated
+# upstream release into a mystery failure in your own suite.
 name: platform-backup-it
 
 services:
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -26,8 +28,10 @@ services:
       timeout: 3s
       retries: 30
 
+  # Pinned, not `mongo:8`: a later 8.x refuses to start on Linux kernels 6.19
+  # and newer (SERVER-121912), and a moving tag broke this suite overnight.
   mongo:
-    image: mongo:8
+    image: mongo:8.0.12
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD: secret

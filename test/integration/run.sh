@@ -2,7 +2,7 @@
 # End-to-end: seed a real target, back it up to a real MinIO, destroy the data,
 # restore it, and assert the data came back.
 #
-# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb vault)
+# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb vault schedule)
 #
 # etcd is not covered here: it needs a real etcd with TLS on the host network,
 # and its restore runs outside the container by design. See docs/backends/etcd.md.
@@ -49,9 +49,24 @@ s3_ls() {
     amazon/aws-cli:latest --endpoint-url http://minio:9000 s3 ls "$@"
 }
 
+# Which compose service each test needs. Starting only those keeps an unrelated
+# target's problems from blocking the tests that do not use it.
+services_for() {
+  case "$1" in
+    postgresql | schedule) printf 'postgres' ;;
+    mongodb) printf 'mongo' ;;
+    vault) printf 'vault' ;;
+  esac
+}
+
 start_stack() {
-  info "Starting MinIO and targets"
-  "${COMPOSE[@]}" up -d --wait
+  local wanted=("$@") svc services=(minio) b
+  for b in "${wanted[@]}"; do
+    svc="$(services_for "$b")"
+    [[ -n "$svc" ]] && services+=("$svc")
+  done
+  info "Starting ${services[*]}"
+  "${COMPOSE[@]}" up -d --wait "${services[@]}"
   docker run --rm --network "$NETWORK" \
     -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
     -e AWS_REGION=us-east-1 \
@@ -131,6 +146,50 @@ test_mongodb() {
   pass "mongodb: data survived backup -> restore"
 }
 
+# The scheduled path is a different code path from a one-shot run, and it is
+# the one nothing could see: a stubbed supercronic accepted a command the real
+# binary could not exec, so SCHEDULE mode died at startup in every image while
+# the unit tests stayed green.
+test_schedule() {
+  local image=ghcr.io/quyendv/platform-backup/postgresql:pg17
+  local prefix=it/schedule name=pb-it-schedule
+
+  info "schedule: starting a container with SCHEDULE set"
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker run -d --name "$name" --network "$NETWORK" \
+    -e SCHEDULE='* * * * *' \
+    -e POSTGRES_HOST=postgres -e POSTGRES_PORT=5432 \
+    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=appdb \
+    -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+    -e AWS_REGION=us-east-1 -e AWS_ENDPOINT_URL_S3=http://minio:9000 \
+    -e S3_BUCKET="$BUCKET" -e S3_PREFIX="$prefix" \
+    "$image" >/dev/null
+
+  # It must still be alive a few seconds later. The argv[0] bug killed it here.
+  sleep 5
+  [[ "$(docker inspect -f '{{.State.Running}}' "$name")" == "true" ]] || {
+    docker logs "$name" 2>&1 | tail -5 >&2
+    docker rm -f "$name" >/dev/null 2>&1
+    fail "schedule: container exited instead of scheduling"
+  }
+  pass "schedule: supercronic started and stayed up"
+
+  info "schedule: waiting for the first scheduled backup (up to ~90s)"
+  local waited=0
+  until s3_ls "s3://${BUCKET}/${prefix}/" 2>/dev/null | grep -qE 'PRE [0-9]{8}_[0-9]{6}/'; do
+    sleep 5
+    waited=$((waited + 5))
+    if ((waited > 90)); then
+      docker logs "$name" 2>&1 | tail -10 >&2
+      docker rm -f "$name" >/dev/null 2>&1
+      fail "schedule: no backup appeared within 90s"
+    fi
+  done
+  pass "schedule: cron actually produced a backup"
+
+  docker rm -f "$name" >/dev/null 2>&1
+}
+
 vault_exec() {
   "${COMPOSE[@]}" exec -T -e VAULT_ADDR=http://127.0.0.1:8200 \
     ${VAULT_TOKEN:+-e VAULT_TOKEN="$VAULT_TOKEN"} vault "$@"
@@ -187,9 +246,9 @@ test_vault() {
 
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb vault)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb vault schedule)
 
-  start_stack
+  start_stack "${backends[@]}"
   local b
   for b in "${backends[@]}"; do
     "test_${b}"
