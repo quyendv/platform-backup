@@ -119,3 +119,59 @@ setup() {
   run aws_calls
   [ "$output" = "" ]
 }
+
+# --- an empty prefix is not a failure ----------------------------------------
+
+@test "an empty prefix lists nothing and succeeds" {
+  # The first backup against a fresh bucket: `aws s3 ls` exits 1 with no
+  # output. Treating that as an error would break every new deployment.
+  stub_aws_empty
+
+  run s3_list_runs "backups/pg"
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+}
+
+@test "pruning an empty prefix succeeds and deletes nothing" {
+  stub_aws_empty
+
+  run prune_remote "backups/pg" 1
+  [ "$status" -eq 0 ]
+
+  run aws_calls
+  [[ "$output" != *"s3 rm"* ]]
+}
+
+# --- listing failures must not look like "no backups" ------------------------
+
+@test "s3_list_runs fails when the AWS CLI reports an error" {
+  # Bad credentials, a missing bucket or a denied policy. These used to be
+  # swallowed by 2>/dev/null and reported as an empty listing, which sends you
+  # hunting for missing backups instead of a broken configuration.
+  stub_aws_error "An error occurred (NoSuchBucket)"
+
+  run s3_list_runs "backups/pg"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"NoSuchBucket"* ]]
+}
+
+@test "s3_resolve_run reports the listing failure, not a missing backup" {
+  stub_aws_error "An error occurred (AccessDenied)"
+
+  run s3_resolve_run "backups/pg" ""
+
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"No backup runs found"* ]]
+}
+
+@test "prune_remote refuses to run when the listing failed" {
+  # Pruning nothing is harmless; reporting success for work never attempted
+  # is not.
+  stub_aws_error "An error occurred (AccessDenied)"
+
+  run prune_remote "backups/pg" 1
+
+  [ "$status" -ne 0 ]
+}
