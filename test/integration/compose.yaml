@@ -71,5 +71,18 @@ services:
       # raft needs a real directory; the image ships none.
       - vault_data:/vault/data
 
+  # Receives webhook notifications so the suite can assert on the payload
+  # instead of trusting that curl was called.
+  notifysink:
+    image: python:3.12-alpine
+    command: ["python", "/sink.py"]
+    volumes:
+      - ./notify-sink.py:/sink.py:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket;socket.create_connection(('127.0.0.1',8080),2)\""]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
 volumes:
   vault_data:
