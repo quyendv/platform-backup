@@ -35,6 +35,10 @@ between minor versions. Each change will be listed here with its migration.
   sidecar now identifies the artifact, which also makes it the marker of a
   complete run: half an upload is rejected up front instead of part-way
   through a restore.
+- **A long error lost the notification.** Telegram rejects a message over
+  4096 characters and Discord over 2000, so a verbose dump failure — the case
+  that matters most — produced no message at all. The error is now capped at
+  `NOTIFY_MAX_ERROR_CHARS` for chat; webhook and email keep it whole.
 - **Adapters could swallow a failed dump.** `backend_dump` ends by echoing the
   artifact filename, so the function's status reflected that echo rather than
   the dump, and errexit is disabled inside the tested context the driver calls
@@ -43,6 +47,8 @@ between minor versions. Each change will be listed here with its migration.
 
 ### Changed
 
+- Each backend's documentation moved from `docs/backends/<name>.md` to
+  `backends/<name>/README.md`, beside the code it describes.
 - The recorded error is the **first** one, not the last: the earliest is the
   cause, everything after it is the driver unwinding.
 - `jq` is installed in all four images, for correct JSON in state, payloads
