@@ -69,15 +69,14 @@ These are load-bearing. Breaking one is a data-loss bug, not a style regression.
   `.staging-<id>` and promoted with `mv` only after dump, size, verification
   and checksum all pass. Prune keeps the newest N directories, so an empty
   directory left by a failure evicts a real backup.
-- **An empty S3 prefix is not an error, a failed listing is.** `aws s3 ls`
-  exits 1 with no output for an empty prefix and 254 with stderr for a real
-  failure; conflating them reports "no backups found" for a credentials
-  problem.
+- **An empty listing is success; a failed listing is not.** Two separate
+  traps. `aws s3 ls` exits 1 with no output for an empty prefix and 254 with
+  stderr for a real failure — conflating them reports "no backups found" for a
+  credentials problem. And under `set -euo pipefail` a bare `grep` with no
+  match aborts the job right after a successful upload; `prune_select` guards
+  that one.
 - **Never pipe into `head` under pipefail** where the producer may still be
   running: SIGPIPE makes the pipeline return 141. Use `find -print -quit`.
-- **An empty listing is success.** Everything runs under `set -euo pipefail`,
-  where a bare `grep` with no match aborts the job right after a successful
-  upload. `prune_select` guards this.
 - **Local and S3 share one layout** (`<run>/<artifact>`). That is what lets a
   single `prune_select` serve both sides; keep them symmetrical.
 - **Timestamps are UTC.**
@@ -110,7 +109,6 @@ TDD, with bats. Two rules that came from real misses in this repo:
    exist.** Assert `status -eq 0` as well, or the test can never go red. Same
    for `run find …` on a missing directory: bats folds stderr into `$output`,
    so the error message counts as one line.
-
 3. **A stub proves the call you made, never that it was valid.** The `aws` stub
    accepted `aws s3 ls --delimiter`, which the real CLI rejects; the
    supercronic stub accepted an argv[0] the real binary could not exec, and
