@@ -20,7 +20,9 @@ between minor versions. Each change will be listed here with its migration.
   catches a schedule that quietly stopped firing.
 - **Notifications** to Slack, Google Chat, Discord, Telegram, a structured
   webhook and email over SMTP — any number at once, each enabled by its own
-  variables. `NOTIFY_ON` selects `never`, `change`, `failure` (default) or
+  variables. The message leads with a status icon and headline, then aligned
+  fields (run, target, duration, exit, error), rendered per channel: HTML for
+  Telegram, fenced markdown for the chat webhooks, plain text for email. `NOTIFY_ON` selects `never`, `change`, `failure` (default) or
   `always`; `failure` includes the first success after a failure, so you learn
   when the problem went away. A channel that fails is logged and skipped and
   never changes a run's outcome.
@@ -39,6 +41,10 @@ between minor versions. Each change will be listed here with its migration.
   4096 characters and Discord over 2000, so a verbose dump failure — the case
   that matters most — produced no message at all. The error is now capped at
   `NOTIFY_MAX_ERROR_CHARS` for chat; webhook and email keep it whole.
+- **HTML escaping was broken by a bash 5.2 change.** An unescaped `&` in the
+  replacement half of a parameter substitution now means "the text that
+  matched", so escaping `<` produced `<lt;` rather than `&lt;`, and Telegram
+  rejects a message whose entities it cannot parse. Escaping goes through sed.
 - **Adapters could swallow a failed dump.** `backend_dump` ends by echoing the
   artifact filename, so the function's status reflected that echo rather than
   the dump, and errexit is disabled inside the tested context the driver calls
