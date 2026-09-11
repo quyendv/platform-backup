@@ -63,7 +63,9 @@ backend_dump() {
   local dir="$1" name="etcd-${RUN_ID}.db"
 
   log_info "etcdctl: $(etcdctl version | head -n1)"
-  _etcdctl snapshot save "${dir}/${name}" >&2
+  # Checked explicitly; see the note in the postgresql adapter.
+  _etcdctl snapshot save "${dir}/${name}" >&2 ||
+    die "etcdctl snapshot save failed against ${ETCDCTL_ENDPOINTS}"
 
   printf '%s' "$name"
 }

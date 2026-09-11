@@ -33,8 +33,13 @@ backend_dump() {
 
   # pg_dump writes the archive to stdout; only the pipeline's exit status tells
   # us it worked, so pipefail (set in the entrypoint) is what makes this safe.
+  # Checked explicitly rather than left to errexit: backend_dump ends by
+  # echoing the filename, and errexit is disabled inside the tested context the
+  # driver calls this from, so a failed pg_dump would otherwise be reported
+  # three steps later as "artifact too small".
   pg_dump "${args[@]}" --no-password -d "$POSTGRES_DB" --format=custom |
-    gzip >"${dir}/${name}"
+    gzip >"${dir}/${name}" ||
+    die "pg_dump failed for ${POSTGRES_DB} on ${POSTGRES_HOST}"
 
   printf '%s' "$name"
 }

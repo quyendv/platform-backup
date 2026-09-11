@@ -342,3 +342,51 @@ fake_backend() {
   MODE=backup run main
   [ "$status" -ne 0 ]
 }
+
+# --- state and notification wiring -------------------------------------------
+
+@test "a successful run records success" {
+  MODE=backup main
+
+  run jq -r '.outcome, .backend' "$BACKUP_DIR/.last-run.json"
+  [ "${lines[0]}" = "success" ]
+  [ "${lines[1]}" = "fake" ]
+}
+
+@test "a failed run records the failure and the message" {
+  backend_dump() { return 1; }
+
+  MODE=backup run main
+  [ "$status" -ne 0 ]
+
+  run jq -r '.outcome, .error' "$BACKUP_DIR/.last-run.json"
+  [ "${lines[0]}" = "failure" ]
+  [[ "${lines[1]}" == *"dump failed"* ]]
+}
+
+@test "the recorded run id matches the promoted run" {
+  MODE=backup main
+
+  local recorded
+  recorded="$(jq -r '.run_id' "$BACKUP_DIR/.last-run.json")"
+  [ -d "$BACKUP_DIR/$recorded" ]
+}
+
+@test "state is recorded for fetch and restore too, not just backup" {
+  stub_aws_stdout "                           PRE 20260101_000000/"
+  mkdir -p "$RESTORE_DIR/20260101_000000"
+  printf 'payload' >"$RESTORE_DIR/20260101_000000/fake.dump"
+  (cd "$RESTORE_DIR/20260101_000000" && sha256sum fake.dump >fake.dump.sha256)
+
+  MODE=fetch S3_BUCKET=my-bucket main
+
+  run jq -r '.outcome' "$BACKUP_DIR/.last-run.json"
+  [ "$output" = "success" ]
+}
+
+@test "a notification failure does not fail the backup" {
+  NOTIFY_ON=always NOTIFY_WEBHOOK_URL=http://127.0.0.1:1/nope \
+    MODE=backup run main
+
+  [ "$status" -eq 0 ]
+}

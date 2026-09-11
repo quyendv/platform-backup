@@ -11,7 +11,7 @@
 
 _LIB_DIR="${_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # shellcheck disable=SC1091
-for _m in log env retention checksum s3 local_store; do
+for _m in log env retention checksum s3 local_store state notify; do
   source "${_LIB_DIR}/${_m}.sh"
 done
 unset _m
@@ -81,6 +81,9 @@ _discard_staging() {
 do_backup() {
   local staging run_dir artifact path size
   RUN_ID="$(date -u '+%Y%m%d_%H%M%S')"
+  # The reporting wrapper runs this in a subshell, so the id has to travel out
+  # of band for the state record to name the right run.
+  [[ -n "${RUN_ID_FILE:-}" ]] && printf '%s' "$RUN_ID" >"$RUN_ID_FILE"
   staging="${BACKUP_DIR}/.staging-${RUN_ID}"
   run_dir="${BACKUP_DIR}/${RUN_ID}"
 
@@ -176,6 +179,63 @@ do_restore() {
   log_ok "Restore complete"
 }
 
+# Records the outcome and notifies, whatever happened. Wrapping main rather
+# than scattering calls through it means there is exactly one place where a
+# run's result is decided, and no path that forgets to report.
+_run_and_report() {
+  local started previous rc=0 err_file error=""
+  local RUN_ID_FILE
+  started="$(date +%s)"
+  previous="$(state_previous_outcome)"
+  err_file="$(mktemp)"
+
+  # A subshell, because die() exits: run it in this shell and the exit unwinds
+  # past the reporting below, which is exactly how a failed run used to leave
+  # no record at all.
+  #
+  # stderr goes through a pipe rather than a process substitution so the shell
+  # waits for tee to finish before the file is read, while the operator still
+  # sees output live during a long dump.
+  RUN_ID_FILE="$(mktemp)"
+  # `set +e` here only stops the parent aborting before PIPESTATUS can be read.
+  # The subshell turns errexit back on: without that, the whole run executed
+  # without it, and a failed pg_dump surfaced as "artifact too small" three
+  # steps later instead of as a dump failure.
+  set +e
+  { (
+    set -e
+    _dispatch_mode
+  ) 2>&1 1>&3 | tee -a "$err_file" >&2; } 3>&1
+  rc="${PIPESTATUS[0]}"
+  set -e
+  RUN_ID="$(cat "$RUN_ID_FILE" 2>/dev/null || true)"
+  rm -f -- "$RUN_ID_FILE"
+
+  if ((rc != 0)); then
+    # First, not last: the earliest error is the cause, anything after it is
+    # the driver unwinding.
+    error="$(grep -a '\[ERROR\]' "$err_file" | head -n1 | sed 's/.*\[ERROR\] *//')"
+    [[ -n "$error" ]] || error="exited with status ${rc}"
+  fi
+  rm -f -- "$err_file"
+
+  state_write "$( ((rc == 0)) && printf success || printf failure)" \
+    "$(backend_name)" "${RUN_ID:-}" "$error" "$rc" "$(($(date +%s) - started))"
+
+  notify_run "$( ((rc == 0)) && printf success || printf failure)" \
+    "$(backend_name)" "${RUN_ID:-}" "$error" "$rc" "$previous"
+
+  return "$rc"
+}
+
+_dispatch_mode() {
+  case "$MODE" in
+    backup) _with_lock do_backup ;;
+    fetch) do_fetch ;;
+    restore) do_restore ;;
+  esac
+}
+
 main() {
   : "${MODE:=backup}"
   # MODE is checked before anything else. Validating the backend first meant a
@@ -189,9 +249,5 @@ main() {
   _validate_common
   backend_validate
 
-  case "$MODE" in
-    backup) _with_lock do_backup ;;
-    fetch) do_fetch ;;
-    restore) do_restore ;;
-  esac
+  _run_and_report
 }

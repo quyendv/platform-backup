@@ -23,8 +23,10 @@ backend_validate() {
 backend_dump() {
   local dir="$1" name="vault-${RUN_ID}.snap.gz"
 
-  vault operator raft snapshot save "${dir}/vault-${RUN_ID}.snap" >&2
-  gzip -9 "${dir}/vault-${RUN_ID}.snap"
+  # Checked explicitly; see the note in the postgresql adapter.
+  vault operator raft snapshot save "${dir}/vault-${RUN_ID}.snap" >&2 ||
+    die "vault raft snapshot save failed against ${VAULT_ADDR}"
+  gzip -9 "${dir}/vault-${RUN_ID}.snap" || die "compressing the snapshot failed"
 
   printf '%s' "$name"
 }
