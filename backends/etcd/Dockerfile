@@ -13,7 +13,7 @@ LABEL org.opencontainers.image.title="platform-backup/etcd" \
   org.opencontainers.image.description="etcd snapshot backup to S3-compatible storage" \
   org.opencontainers.image.source="https://github.com/quyendv/platform-backup"
 
-RUN apk add --no-cache bash ca-certificates coreutils curl findutils util-linux aws-cli
+RUN apk add --no-cache bash ca-certificates coreutils curl findutils util-linux aws-cli jq
 
 # A failing curl inside a pipe must fail the build, not be swallowed by tar.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -32,10 +32,16 @@ WORKDIR /opt/platform-backup
 COPY lib/ ./lib/
 COPY entrypoint.sh ./entrypoint.sh
 COPY backends/etcd/backend.sh ./backend.sh
-RUN chmod +x entrypoint.sh
+COPY healthcheck.sh ./healthcheck.sh
+RUN chmod +x entrypoint.sh healthcheck.sh
 
 ENV BACKUP_DIR=/backup RESTORE_DIR=/restore ETCD_MODE=kubeadm
 RUN mkdir -p /backup /restore
 VOLUME ["/backup"]
+
+# Makes a failing schedule visible to docker ps and anything watching
+# container health. A one-shot run exits before this ever matters.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=1 \
+  CMD ["/opt/platform-backup/healthcheck.sh"]
 
 ENTRYPOINT ["/opt/platform-backup/entrypoint.sh"]

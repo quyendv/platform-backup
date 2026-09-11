@@ -43,7 +43,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-  bash ca-certificates curl gnupg gzip findutils util-linux \
+  bash ca-certificates curl gnupg gzip findutils util-linux jq \
   && case "${TARGETARCH}" in \
   amd64) \
   curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc \
@@ -73,10 +73,16 @@ WORKDIR /opt/platform-backup
 COPY lib/ ./lib/
 COPY entrypoint.sh ./entrypoint.sh
 COPY backends/mongodb/backend.sh ./backend.sh
-RUN chmod +x entrypoint.sh
+COPY healthcheck.sh ./healthcheck.sh
+RUN chmod +x entrypoint.sh healthcheck.sh
 
 ENV BACKUP_DIR=/backup RESTORE_DIR=/restore
 RUN mkdir -p /backup /restore
 VOLUME ["/backup"]
+
+# Makes a failing schedule visible to docker ps and anything watching
+# container health. A one-shot run exits before this ever matters.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=1 \
+  CMD ["/opt/platform-backup/healthcheck.sh"]
 
 ENTRYPOINT ["/opt/platform-backup/entrypoint.sh"]
