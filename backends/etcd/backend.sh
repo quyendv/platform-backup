@@ -64,10 +64,14 @@ backend_dump() {
 
   log_info "etcdctl: $(etcdctl version | head -n1)"
   _etcdctl snapshot save "${dir}/${name}" >&2
-  # A snapshot that etcdctl cannot read back is not a backup.
-  _etcdctl snapshot status "${dir}/${name}" -w table >&2
 
   printf '%s' "$name"
+}
+
+# A snapshot etcdctl cannot read back is not a backup. This runs as the
+# driver's verification step so every backend reports integrity the same way.
+backend_verify() {
+  _etcdctl snapshot status "$1" -w table >&2
 }
 
 backend_restore_hint() {

@@ -53,9 +53,25 @@ s3_list_runs() {
   uri="s3://${S3_BUCKET}/${prefix:+${prefix}/}"
   # `aws s3 ls` on a prefix is already non-recursive and reports child prefixes
   # as "PRE <name>/"; the high-level s3 command has no --delimiter flag at all.
+  #
+  # Exit status alone cannot be trusted: an empty prefix — what the first ever
+  # backup sees — exits 1 with no output, while a missing bucket, a denied
+  # policy or bad credentials exit 254 and write to stderr. Discarding stderr
+  # turned every one of those into "no backups found", pointing at the wrong
+  # problem entirely.
+  local out rc=0 errfile
+  errfile="$(mktemp)"
+  out="$(aws s3 ls "$uri" 2>"$errfile")" || rc=$?
+  if ((rc != 0)) && [[ -s "$errfile" ]]; then
+    log_error "Cannot list ${uri}: $(tr '\n' ' ' <"$errfile" | head -c 300)"
+    rm -f "$errfile"
+    return 1
+  fi
+  rm -f "$errfile"
+
   # The sed pattern is the filter: only well-formed run folders come through, so
   # anything else living under the prefix is invisible to pruning.
-  aws s3 ls "$uri" 2>/dev/null |
+  printf '%s\n' "$out" |
     sed -n 's|^ *PRE \([0-9]\{8\}_[0-9]\{6\}\)/$|\1|p'
 }
 
@@ -105,11 +121,15 @@ s3_delete_run() {
 
 # prune_remote PREFIX KEEP — apply the retention policy to the object store.
 prune_remote() {
-  local prefix="$1" keep="$2" run
+  local prefix="$1" keep="$2" runs run
+  # Listed first, deliberately: a process substitution's exit status is
+  # invisible, so a failed listing used to look exactly like "nothing to
+  # prune" and report success for work it never did.
+  runs="$(s3_list_runs "$prefix")" || return 1
   while IFS= read -r run; do
     [[ -n "$run" ]] || continue
     s3_delete_run "$prefix" "$run"
-  done < <(s3_list_runs "$prefix" | prune_select "$keep")
+  done < <(printf '%s\n' "$runs" | prune_select "$keep")
 }
 
 # s3_resolve_run PREFIX [WANTED] -> the run id to restore from.
@@ -118,7 +138,14 @@ prune_remote() {
 # than the one asked for is worse than failing.
 s3_resolve_run() {
   local prefix="$1" wanted="${2:-}" runs
-  runs="$(s3_list_runs "$prefix" | sort -r)"
+  # "could not list" and "nothing there" are different problems and must not
+  # produce the same message.
+  runs="$(s3_list_runs "$prefix")" ||
+    {
+      log_error "Cannot resolve a run: listing $(s3_uri "$prefix") failed"
+      return 1
+    }
+  runs="$(printf '%s\n' "$runs" | sort -r)"
   if [[ -z "$runs" ]]; then
     log_error "No backup runs found under $(s3_uri "$prefix")"
     return 1

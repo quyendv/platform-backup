@@ -30,7 +30,8 @@ fake_backend() {
   backend_validate() { :; }
   backend_dump() {
     local dir="$1"
-    printf 'contents' >"$dir/fake-${RUN_ID}.dump"
+    # Comfortably over MIN_ARTIFACT_BYTES; the size floor has its own tests.
+    head -c 2048 /dev/zero | tr '\0' 'x' >"$dir/fake-${RUN_ID}.dump"
     printf 'fake-%s.dump' "$RUN_ID"
   }
   backend_restore() { printf '%s' "$1" >"$RESTORED_FROM"; }
@@ -69,7 +70,7 @@ fake_backend() {
   [ "${#lines[@]}" -eq 1 ]
 }
 
-@test "backup fails when the backend produces an empty artifact" {
+@test "backup rejects an artifact that is implausibly small" {
   backend_dump() {
     : >"$1/fake-${RUN_ID}.dump"
     printf 'fake-%s.dump' "$RUN_ID"
@@ -78,7 +79,34 @@ fake_backend() {
   MODE=backup run main
 
   [ "$status" -ne 0 ]
-  [[ "$output" == *"empty"* ]]
+  [[ "$output" == *"implausibly small"* ]]
+}
+
+@test "the size floor is configurable" {
+  backend_dump() {
+    head -c 100 /dev/zero | tr '\0' 'x' >"$1/fake-${RUN_ID}.dump"
+    printf 'fake-%s.dump' "$RUN_ID"
+  }
+
+  MODE=backup MIN_ARTIFACT_BYTES=50 run main
+  [ "$status" -eq 0 ]
+}
+
+@test "two runs in the same second do not corrupt a run folder" {
+  # A frozen run-id clock makes the collision certain instead of occasional.
+  stub_fixed_run_id 20260101_000000
+
+  MODE=backup main
+  local existing
+  existing="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d)"
+
+  MODE=backup run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already exists"* ]]
+
+  # The original run is untouched, with nothing nested inside it.
+  [ "$(find "$existing" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 0 ]
+  [ "$(find "$existing" -name '*.dump' | wc -l)" -eq 1 ]
 }
 
 @test "backup skips the object store when no bucket is configured" {
@@ -185,4 +213,132 @@ fake_backend() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"sideways"* ]]
   [[ "$output" != *"VAULT_ADDR"* ]]
+}
+
+# --- failed runs must not occupy retention slots ------------------------------
+# A failed run used to leave an empty YYYYMMDD_HHMMSS directory behind. Because
+# prune keeps the newest N by name, a run of failures evicted every good backup.
+
+@test "a failed dump leaves no run directory behind" {
+  backend_dump() { return 1; }
+
+  MODE=backup run main
+  [ "$status" -ne 0 ]
+
+  run find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d
+  [ "$output" = "" ]
+}
+
+@test "repeated failures never evict good backups" {
+  # Distinct run ids need distinct seconds; failures create no directory, so
+  # only the successful runs have to be spaced out.
+  MODE=backup KEEP_LOCAL=3 main
+  sleep 1
+  MODE=backup KEEP_LOCAL=3 main
+  sleep 1
+
+  backend_dump() { return 1; }
+  for _ in 1 2 3 4; do
+    MODE=backup KEEP_LOCAL=3 run main
+  done
+
+  backend_dump() {
+    head -c 2048 /dev/zero | tr '\0' 'x' >"$1/fake-${RUN_ID}.dump"
+    printf 'fake-%s.dump' "$RUN_ID"
+  }
+  MODE=backup KEEP_LOCAL=3 main
+
+  # Two good backups predate the failures; all three must survive.
+  [ "$(find "$BACKUP_DIR" -name '*.dump' | wc -l)" -eq 3 ]
+}
+
+@test "an artifact the backend leaves half-written is not promoted" {
+  backend_dump() {
+    printf 'partial' >"$1/fake-${RUN_ID}.dump"
+    return 1
+  }
+
+  MODE=backup run main
+  [ "$status" -ne 0 ]
+
+  run find "$BACKUP_DIR" -name '*.dump'
+  [ "$output" = "" ]
+}
+
+@test "a crashed run's staging directory is not mistaken for a backup" {
+  mkdir -p "$BACKUP_DIR/.staging-20260101_000000"
+  echo junk >"$BACKUP_DIR/.staging-20260101_000000/leftover.dump"
+
+  MODE=backup KEEP_LOCAL=3 main
+
+  [ ! -d "$BACKUP_DIR/.staging-20260101_000000" ]
+  [ "$(find "$BACKUP_DIR" -name '*.dump' | wc -l)" -eq 1 ]
+}
+
+@test "fetch copes with a run folder holding many files" {
+  # `find | head -n1` under pipefail: head exits first, find takes SIGPIPE and
+  # the pipeline returns 141. With two files find usually finishes in time, so
+  # this only shows up on a larger folder.
+  stub_aws_stdout "                           PRE 20260101_000000/"
+  mkdir -p "$RESTORE_DIR/20260101_000000"
+  local i
+  for i in $(seq 1 3000); do : >"$RESTORE_DIR/20260101_000000/pad-$i.bin"; done
+  printf 'payload' >"$RESTORE_DIR/20260101_000000/aaa-real.dump"
+  (cd "$RESTORE_DIR/20260101_000000" && sha256sum aaa-real.dump >aaa-real.dump.sha256)
+
+  MODE=fetch S3_BUCKET=my-bucket run main
+
+  [ "$status" -eq 0 ]
+}
+
+@test "an invalid DRY_RUN is rejected rather than read as false" {
+  MODE=backup DRY_RUN=ture run main
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"DRY_RUN"* ]]
+}
+
+# --- artifact integrity ------------------------------------------------------
+# A size floor cannot tell an empty database from a truncated dump: both are
+# small. A real pg_dump of an empty database gzips to ~405 bytes, so a floor
+# high enough to catch corruption also rejects legitimate backups. The floor
+# only catches "the tool produced nothing"; integrity is the backend's job.
+
+@test "the backend's own verification runs before promotion" {
+  VERIFIED="$BATS_TEST_TMPDIR/verified"
+  backend_verify() { printf '%s' "$1" >"$VERIFIED"; }
+
+  MODE=backup main
+
+  [ -f "$VERIFIED" ]
+  [[ "$(cat "$VERIFIED")" == *".dump" ]]
+}
+
+@test "a run failing verification is discarded, not promoted" {
+  backend_verify() { return 1; }
+
+  MODE=backup run main
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"verification"* ]]
+  run find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d
+  [ "$output" = "" ]
+}
+
+@test "a backend without a verify hook still works" {
+  unset -f backend_verify 2>/dev/null || true
+
+  MODE=backup run main
+
+  [ "$status" -eq 0 ]
+}
+
+@test "an artifact of a few bytes is still rejected" {
+  backend_dump() {
+    printf 'x' >"$1/fake-${RUN_ID}.dump"
+    printf 'fake-%s.dump' "$RUN_ID"
+  }
+
+  MODE=backup run main
+  [ "$status" -ne 0 ]
 }

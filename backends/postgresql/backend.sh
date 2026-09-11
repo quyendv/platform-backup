@@ -39,6 +39,14 @@ backend_dump() {
   printf '%s' "$name"
 }
 
+# pg_restore --list parses the archive's table of contents, so it fails on a
+# truncated or corrupt dump while accepting a valid dump of an empty database.
+backend_verify() {
+  local file="$1"
+  gzip -t "$file" || return 1
+  gunzip -c "$file" | pg_restore --list >/dev/null
+}
+
 backend_restore() {
   local file="$1"
   local args=()
