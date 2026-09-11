@@ -201,6 +201,12 @@ Artifact filenames changed too (`postgresql_backup.dump.gz` →
 the old ones. Keep the old image around until the retention window on existing
 backups has passed.
 
+## Changelog
+
+[CHANGELOG.md](CHANGELOG.md). The environment contract may still change
+between minor versions while the major version is `0`; every change is listed
+there with its migration.
+
 ## Design
 
 [docs/superpowers/specs/2026-09-10-platform-backup-monorepo-design.md](docs/superpowers/specs/2026-09-10-platform-backup-monorepo-design.md)
