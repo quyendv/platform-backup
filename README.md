@@ -85,12 +85,19 @@ an `~/.aws/config` containing `s3.addressing_style`.
 | `KEEP_REMOTE` | `30` | Runs kept in S3; `0` disables pruning |
 | `RESTORE_TIMESTAMP` | *(newest)* | Pin a run, `YYYYMMDD_HHMMSS` |
 | `DRY_RUN` | `false` | Log what would happen, change nothing |
+| `MIN_ARTIFACT_BYTES` | `128` | Floor below which a dump is treated as failed |
 
 Backend-specific variables are documented on each backend's page.
 
 ## Retention
 
 Retention is a **count**, not an age: keep the newest N runs on each side.
+
+A run is assembled in a staging directory and moved into place only once the
+artifact exists, passes the backend's own integrity check and has a checksum,
+so **a failed backup never becomes a run** and never occupies a retention slot.
+That matters: before this, a handful of consecutive failures would evict every
+good backup that came before them.
 
 Only whole run folders are deleted, never individual objects, so an artifact and
 its checksum can never be separated. Anything under the prefix that is not
@@ -115,6 +122,12 @@ s3://$S3_BUCKET/$S3_PREFIX/20260305_020000/postgresql-20260305_020000.dump.gz
 
 Timestamps are UTC. Every artifact carries a SHA-256 sidecar, and `fetch` and
 `restore` verify it before doing anything with the data.
+
+Each backend also verifies its own artifact before the run is promoted —
+`pg_restore --list` for postgresql, `gzip -t` for mongodb and vault,
+`etcdctl snapshot status` for etcd. A size floor cannot do this job: a real
+dump of an empty database is only a few hundred bytes, so any threshold high
+enough to catch a truncated archive would reject a legitimate backup.
 
 ## Development
 

@@ -41,6 +41,7 @@ backend_name          # "postgresql"
 backend_caps          # "fetch restore", or just "fetch" for etcd
 backend_validate      # require_env for its own variables
 backend_dump  <dir>   # write the artifact, echo its filename
+backend_verify <path> # optional; integrity check, runs before promotion
 backend_restore <path>
 backend_restore_hint  # optional; printed when restore is unsupported
 ```
@@ -64,6 +65,16 @@ These are load-bearing. Breaking one is a data-loss bug, not a style regression.
   under the prefix belongs to someone else.
 - **Prune deletes whole run folders**, never individual objects, so an artifact
   and its `.sha256` cannot be separated.
+- **A failed run must never become a run directory.** Runs are staged under
+  `.staging-<id>` and promoted with `mv` only after dump, size, verification
+  and checksum all pass. Prune keeps the newest N directories, so an empty
+  directory left by a failure evicts a real backup.
+- **An empty S3 prefix is not an error, a failed listing is.** `aws s3 ls`
+  exits 1 with no output for an empty prefix and 254 with stderr for a real
+  failure; conflating them reports "no backups found" for a credentials
+  problem.
+- **Never pipe into `head` under pipefail** where the producer may still be
+  running: SIGPIPE makes the pipeline return 141. Use `find -print -quit`.
 - **An empty listing is success.** Everything runs under `set -euo pipefail`,
   where a bare `grep` with no match aborts the job right after a successful
   upload. `prune_select` guards this.
@@ -100,10 +111,18 @@ TDD, with bats. Two rules that came from real misses in this repo:
    for `run find …` on a missing directory: bats folds stderr into `$output`,
    so the error message counts as one line.
 
-Unit tests stub `aws` (see `test/unit/helpers/stub_aws.bash`), which verifies
-the command that gets built but not that it is *valid* — a stub happily accepted
-`aws s3 ls --delimiter`, which the real CLI rejects. Anything touching the AWS
-CLI's actual surface needs `mise run test:integration`.
+3. **A stub proves the call you made, never that it was valid.** The `aws` stub
+   accepted `aws s3 ls --delimiter`, which the real CLI rejects; the
+   supercronic stub accepted an argv[0] the real binary could not exec, and
+   SCHEDULE mode was dead in every image while the suite stayed green.
+   Anything touching a real binary's surface needs `mise run test:integration`.
+4. **Pin fixture images.** `mongo:8` started refusing to boot on kernel 6.19+
+   and broke the suite overnight with no change of ours.
+
+Timing-dependent assertions are not tests. The SIGPIPE bug reproduces at 3000
+files in a plain shell but not under bats, so it is guarded structurally
+instead. Where a test needs determinism, add a seam and say why:
+`SUPERCRONIC_BIN` and `stub_fixed_run_id` exist only for that.
 
 ## Branching
 
