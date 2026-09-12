@@ -1,5 +1,5 @@
-# One-shot restore for mongodb. Reuses the CronJob's ConfigMap and Secret, so the
-# object store settings cannot drift between backup and restore.
+# One-shot restore for mongodb. Reuses the CronJob's Secret, so the object store
+# settings cannot drift between backup and restore.
 #
 # Set RESTORE_DROP=true to pass --drop to mongorestore.
 #
@@ -18,7 +18,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: restore
-          image: ghcr.io/quyendv/platform-backup/mongodb:latest
+          image: ghcr.io/quyendv/platform-backup/mongodb:0.2.0
           imagePullPolicy: Always
           env:
             - name: MODE
@@ -26,11 +26,12 @@ spec:
             # Empty selects the newest run; set YYYYMMDD_HHMMSS to pin one.
             - name: RESTORE_TIMESTAMP
               value: ""
+            # A restore is deliberate and watched; notifying about it is noise.
+            - name: NOTIFY_ON
+              value: "never"
           envFrom:
-            - configMapRef:
-                name: mongodb-backup-config
             - secretRef:
-                name: mongodb-backup-secret
+                name: mongodb-backup
           volumeMounts:
             - name: restore
               mountPath: /restore

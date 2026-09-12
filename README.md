@@ -14,10 +14,11 @@ restore its own data.
 | `ghcr.io/quyendv/platform-backup/mongodb` | `latest` |
 | `ghcr.io/quyendv/platform-backup/etcd` | `latest` |
 | `ghcr.io/quyendv/platform-backup/vault` | `latest` |
+| `ghcr.io/quyendv/platform-backup/redis` | `redis7` `redis8` `latest` (= redis8) |
 
 Each backend documents itself next to its own code:
 [postgresql](backends/postgresql/) · [mongodb](backends/mongodb/) ·
-[etcd](backends/etcd/) · [vault](backends/vault/)
+[etcd](backends/etcd/) · [vault](backends/vault/) · [redis](backends/redis/)
 
 ## Quick start
 
@@ -38,17 +39,35 @@ cron. Leave `SCHEDULE` unset and it runs once and exits.
 
 `MODE` has exactly one meaning per value.
 
-| Mode | What it does | postgresql | mongodb | vault | etcd |
-|---|---|:--:|:--:|:--:|:--:|
-| `backup` *(default)* | dump, upload, prune | ✅ | ✅ | ✅ | ✅ |
-| `fetch` | download and verify a run into `RESTORE_DIR`, touching nothing else | ✅ | ✅ | ✅ | ✅ |
-| `restore` | write a backup into the live target | ✅ | ✅ | ✅ | ❌ |
+| Mode | What it does | postgresql | mongodb | redis | vault | etcd |
+|---|---|:--:|:--:|:--:|:--:|:--:|
+| `backup` *(default)* | dump, upload, prune | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `fetch` | download and verify a run into `RESTORE_DIR`, touching nothing else | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `restore` | write a backup into the live target | ✅ | ✅ | ✅* | ✅ | ❌ |
 
 etcd refuses `restore`: restoring etcd rewrites the data directory of a
 *stopped* member, so it cannot be done from a container against a live cluster.
 The image says so and prints the `etcdctl` command to run on the host.
 
+\* redis restores over plain connections only, and refuses a Redis Cluster
+outright — a cluster shards its keyspace, so one endpoint holds a fraction of
+it. See [backends/redis/](backends/redis/).
+
 `fetch` and `restore` ignore `SCHEDULE` and always run once.
+
+**Restore assumes no traffic.** None of these restores are atomic: writes
+arriving while one runs interleave with the data being restored, and afterwards
+nothing distinguishes them. Quiesce the clients first. That holds for both
+things a restore is usually for — moving data to a new instance, where the
+target has no traffic yet, and undoing an incident, where serving from a
+half-restored database is worse than serving nothing.
+
+Restores here write into a **running** server, which needs no volume access and
+no restart rights. Where the artifact is the server's own state file — redis
+and etcd — placing it on the volume and restarting is far faster (measured at
+85× for Redis) and uses half the memory. Those backends document the procedure:
+[redis](backends/redis/#two-ways-to-restore), [etcd](backends/etcd/#restore).
+`MODE=fetch` with `FETCH_DECOMPRESS=true` produces a ready-to-place file.
 
 ## Environment
 
@@ -84,6 +103,7 @@ an `~/.aws/config` containing `s3.addressing_style`.
 | `KEEP_LOCAL` | `3` | Runs kept on disk; `0` disables pruning |
 | `KEEP_REMOTE` | `30` | Runs kept in S3; `0` disables pruning |
 | `RESTORE_TIMESTAMP` | *(newest)* | Pin a run, `YYYYMMDD_HHMMSS` |
+| `FETCH_DECOMPRESS` | `false` | `fetch` also unpacks a `.gz` artifact, ready to place |
 | `DRY_RUN` | `false` | Log what would happen, change nothing |
 | `MIN_ARTIFACT_BYTES` | `128` | Floor below which a dump is treated as failed |
 
@@ -206,11 +226,22 @@ enough to catch a truncated archive would reject a legitimate backup.
 mise install          # pinned shellcheck, shfmt, hadolint, actionlint, bats
 mise run check        # format check, all linters, 79 unit tests — what CI runs
 mise run build        # build all images for the host architecture
-mise run test:integration   # real MinIO + Postgres + Mongo, backup→restore→verify
+mise run test:integration   # real MinIO + Postgres + Mongo + Redis, backup→restore→verify
+mise run test:k8s           # kind + the Bitnami chart: the offline restore runbook (~10 min)
+mise run scan:secrets       # gitleaks over the whole history
 ```
 
 `mise run check` is exactly the command CI runs, against the same pinned tool
 versions.
+
+`check` includes a gitleaks scan of the full history. The pre-commit hook scans
+staged changes too, but hooks live in a clone: they are absent until someone
+runs `pre-commit install`, and `--no-verify` skips them. CI is what actually
+gates, which is why the scan is in `check` rather than only in the hook.
+
+`test:k8s` applies the restore manifest this repository ships, rather than a
+copy of it. A runbook nobody executes drifts from the code it describes, and
+this one has three failure modes that only appear on a real cluster.
 
 ### Verifying arm64
 

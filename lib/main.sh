@@ -25,6 +25,7 @@ unset _m
 : "${DRY_RUN:=false}"
 : "${S3_BUCKET:=}"
 : "${RESTORE_TIMESTAMP:=}"
+: "${FETCH_DECOMPRESS:=false}"
 
 backend_supports() {
   local want="$1"
@@ -170,6 +171,17 @@ do_fetch() {
   local file
   file="$(_fetch_into "$RESTORE_DIR")"
   log_ok "Artifact available at ${file}"
+
+  # Physical backends (redis, etcd) are restored by putting the artifact in the
+  # server's data directory and restarting — far faster than replaying it into
+  # a live server, and the only option for etcd. That needs it uncompressed.
+  #
+  # Strictly after verification: handing someone a corrupt file to drop into a
+  # data directory is the worst outcome this mode has.
+  if bool_is_true FETCH_DECOMPRESS && [[ "$file" == *.gz ]]; then
+    gunzip -kf -- "$file" || die "Could not decompress ${file}"
+    log_ok "Uncompressed and ready to place: ${file%.gz}"
+  fi
 }
 
 do_restore() {

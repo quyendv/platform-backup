@@ -50,6 +50,12 @@ Restoring into a database that is neither dropped nor cleaned will produce
 
 ## Kubernetes
 
-[`k8s/`](k8s/) has a CronJob with a
-split ConfigMap/Secret, and a one-shot restore Job that reuses both so the
-object-store settings cannot drift between backup and restore.
+[`k8s/`](k8s/) has a CronJob and a one-shot restore Job that reuses its
+Secret, so the object-store settings cannot drift between backup and restore.
+
+Notifications are configured in the same Secret. Leave `NOTIFY_ON=failure`
+there: each run is a fresh pod with an `emptyDir`, so the state file never
+survives and "previous outcome" is always unknown — `change` would fire on
+every run, and a recovery message can never be sent. Failures notify either
+way, which is the part that matters. Mount a PersistentVolumeClaim at
+`/backup` if you want both.

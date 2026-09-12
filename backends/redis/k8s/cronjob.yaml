@@ -1,7 +1,7 @@
-# Scheduled vault backup. Replace <your-namespace> and fill in the Secret.
+# Scheduled redis backup. Replace <your-namespace> and fill in the Secret.
 #
-#   kubectl apply -f backends/vault/k8s/cronjob.yaml
-#   kubectl create job --from=cronjob/vault-backup vault-backup-now -n <your-namespace>
+#   kubectl apply -f backends/redis/k8s/cronjob.yaml
+#   kubectl create job --from=cronjob/redis-backup redis-backup-now -n <your-namespace>
 #
 # One Secret rather than a ConfigMap alongside it: splitting them only buys
 # anything if RBAC separates who may read config from who may read credentials,
@@ -12,14 +12,14 @@
 apiVersion: v1
 kind: Secret
 metadata:
-  name: vault-backup
+  name: redis-backup
   namespace: <your-namespace>
 type: Opaque
 stringData:
-  # ── Vault ──────────────────────────────────────────────────────────────────
-  VAULT_ADDR: "http://vault.<your-namespace>.svc.cluster.local:8200"
-  # A token with the backup-raft policy; see ../policies/backup-raft.hcl.
-  VAULT_TOKEN: ""
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  # One URL carries host, port, password and database, which is why the whole
+  # configuration lives in a Secret.
+  REDIS_URL: "redis://:password@redis.<your-namespace>.svc.cluster.local:6379/0"
 
   # ── Object storage ─────────────────────────────────────────────────────────
   # Read by the AWS CLI itself. Omit both keys entirely to authenticate with an
@@ -32,7 +32,7 @@ stringData:
 
   # Read by this image.
   S3_BUCKET: "your-bucket"
-  S3_PREFIX: "backups/vault"
+  S3_PREFIX: "backups/redis"
 
   # ── Retention ──────────────────────────────────────────────────────────────
   # Counts, not days. 0 disables pruning on that side. KEEP_LOCAL barely
@@ -63,7 +63,7 @@ stringData:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: vault-backup
+  name: redis-backup
   namespace: <your-namespace>
 spec:
   schedule: "0 2 * * *"
@@ -79,11 +79,11 @@ spec:
           restartPolicy: Never
           containers:
             - name: backup
-              image: ghcr.io/quyendv/platform-backup/vault:0.2.0
+              image: ghcr.io/quyendv/platform-backup/redis:redis8
               imagePullPolicy: Always
               envFrom:
                 - secretRef:
-                    name: vault-backup
+                    name: redis-backup
               volumeMounts:
                 - name: backup
                   mountPath: /backup

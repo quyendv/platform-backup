@@ -1,0 +1,79 @@
+# Offline restore for Redis: place the RDB on the server's volume and start it,
+# rather than replaying keys into a live server.
+#
+# Measured on 200k keys: 130 ms this way, 11 seconds through MIGRATE. It also
+# avoids holding a second copy of the dataset in the restore pod's memory.
+#
+# This Job assumes the server is ALREADY SCALED TO ZERO. It writes directly to
+# the volume the server owns; running it against a live server corrupts both.
+# The full sequence is in ../README.md — the scale-down order matters, because
+# a surviving replica can be promoted and overwrite what you just restored.
+#
+# Two details that are easy to get wrong, and were only found by running it:
+#
+#   1. The chart enables AOF (`appendonly yes`). Redis then loads the AOF and
+#      ignores dump.rdb entirely — placing the RDB alone does nothing. Deleting
+#      the AOF does not help either: with AOF on and none present, Redis starts
+#      EMPTY rather than falling back to the RDB. So the AOF has to be built
+#      from the RDB before the server starts.
+#
+#   2. That AOF must be written by the SAME Redis build the server runs. Our
+#      image ships 8.10.1 and the chart ran 8.0.3; the AOF from the newer one
+#      failed to load with "Can't handle RDB format version 15" and the pod
+#      crash-looped. So staging uses the chart's own image, and ours only
+#      unpacks the artifact.
+#
+# Replace: the image below (match your chart's), the PVC names, and the
+# namespace.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-restore-offline
+  namespace: <your-namespace>
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext: {fsGroup: 1001}
+      initContainers:
+        - name: fetch
+          image: ghcr.io/quyendv/platform-backup/redis:redis8
+          securityContext: {runAsUser: 1001}
+          command: ["bash", "-euo", "pipefail", "-c"]
+          args:
+            - |
+              run=$(ls -1 /backup | grep -E '^[0-9]{8}_[0-9]{6}$' | sort | tail -1)
+              gunzip -c /backup/"$run"/*.rdb.gz > /work/dump.rdb
+              echo "extracted $(stat -c%s /work/dump.rdb) bytes from run $run"
+          volumeMounts:
+            - {name: store, mountPath: /backup}
+            - {name: work, mountPath: /work}
+      containers:
+        - name: stage
+          # MUST match the image your Redis actually runs:
+          #   kubectl get sts <release>-master -o jsonpath='{.spec.template.spec.containers[0].image}'
+          image: docker.io/bitnamilegacy/redis:latest
+          securityContext: {runAsUser: 1001}
+          command: ["bash", "-euo", "pipefail", "-c"]
+          args:
+            - |
+              redis-server --dir /work --dbfilename dump.rdb --port 6399 \
+                --daemonize yes --save '' --appendonly no
+              until redis-cli -p 6399 ping 2>/dev/null | grep -q PONG; do sleep 0.3; done
+              echo "staged keys: $(redis-cli -p 6399 dbsize)"
+              redis-cli -p 6399 config set appendonly yes > /dev/null
+              until [ "$(redis-cli -p 6399 info persistence | tr -d '\r' | sed -n 's/^aof_rewrite_in_progress://p')" = "0" ]; do sleep 0.3; done
+              redis-cli -p 6399 shutdown nosave 2>/dev/null || true
+              sleep 1
+              rm -rf /data/dump.rdb /data/appendonlydir
+              cp -r /work/dump.rdb /work/appendonlydir /data/
+              echo "placed: $(ls /data | tr '\n' ' ')"
+          volumeMounts:
+            - {name: work, mountPath: /work}
+            - {name: redis-data, mountPath: /data}
+      volumes:
+        - {name: store, persistentVolumeClaim: {claimName: <the PVC holding your backups>}}
+        - {name: work, emptyDir: {}}
+        - {name: redis-data, persistentVolumeClaim: {claimName: redis-data-<release>-master-0}}

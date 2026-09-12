@@ -61,3 +61,10 @@ committing to any of this.
 
 [`k8s/`](k8s/). The image runs as uid 100,
 the base image's unprivileged `vault` user, so it satisfies `runAsNonRoot`.
+
+Notifications are configured in the same Secret. Leave `NOTIFY_ON=failure`
+there: each run is a fresh pod with an `emptyDir`, so the state file never
+survives and "previous outcome" is always unknown — `change` would fire on
+every run, and a recovery message can never be sent. Failures notify either
+way, which is the part that matters. Mount a PersistentVolumeClaim at
+`/backup` if you want both.

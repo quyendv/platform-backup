@@ -9,6 +9,74 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-12
+
+A Redis backend, and a second way to restore for the backends whose artifact is
+the server's own state file. Additive: no environment variable changed meaning,
+and 0.2.0 backups restore unchanged.
+
+### Added
+
+- **A secret scan that actually gates.** `mise run scan:secrets` runs gitleaks
+  over the full history and is part of `check`, so CI enforces it. The
+  pre-commit hook stays, but a hook lives in a clone: it is absent until
+  someone installs it, and `--no-verify` skips it.
+- **`mise run test:k8s`**, which proves the offline restore runbook on a kind
+  cluster with the Bitnami chart and two replicas. It applies the manifest the
+  repository ships rather than a copy, so the documented procedure cannot rot
+  unnoticed.
+- **`FETCH_DECOMPRESS`**, so `MODE=fetch` unpacks a `.gz` artifact ready to
+  place in a server's data directory. That offline path — place the file,
+  restart — is far cheaper than replaying into a live server where the artifact
+  is the server's own state format: measured at 130 ms against 11 seconds for
+  200k Redis keys, and half the memory. Documented for redis with a runbook for
+  Docker and for the Bitnami chart with replicas, verified on a real cluster.
+- **A Redis backend**, `ghcr.io/quyendv/platform-backup/redis`. RDB snapshots
+  pulled over the network with `redis-cli --rdb`; restore stages the RDB on a
+  throwaway `redis-server` inside the container and `MIGRATE`s the keys across,
+  which preserves data types and TTLs. Tagged per major version (`redis7`,
+  `redis8`, `latest` = `redis8`) because RDB is not backward compatible — Redis
+  8 writes `REDIS0015`, which `redis-server` 7.4 will not load.
+
+  Two things it refuses rather than half-doing:
+
+  - **Redis Cluster.** A cluster shards its keyspace and `--rdb` returns only
+    the node it is aimed at; `-c` does not change that. Three masters holding
+    100 keys measured 33, 30 and 37, so one URL would back up a third of the
+    data and report success. Back up each master separately for now.
+  - **Restoring into a `rediss://` target.** `MIGRATE` runs on the staging
+    server and has no TLS option. Backup over TLS works normally.
+
+  Restore loads the whole dataset into the backup container's memory, so a
+  10 GB Redis needs a 10 GB limit on the pod. Documented with the backend.
+
+### Changed
+
+- **Restore now documents that it assumes no traffic.** None of these restores
+  are atomic, so writes arriving while one runs interleave with the restored
+  data and nothing afterwards distinguishes them. Previously implied, now
+  stated.
+- **Kubernetes manifests use a single Secret**, not a Secret plus a ConfigMap.
+  Splitting them only pays off where RBAC separates who may read configuration
+  from who may read credentials, or where an external secret manager owns the
+  Secret; otherwise it is a second object to keep in sync, and it puts the
+  bucket and endpoint somewhere usually readable by more principals.
+- **Notifications are configured in the manifests**, with `NOTIFY_ON=failure`
+  and every channel listed commented out. A CronJob gives each run a fresh
+  pod, so the state file never survives and "previous outcome" is always
+  unknown: failures notify as normal, `change` would fire on every run, and a
+  recovery message can only be sent if `/backup` is a PersistentVolumeClaim.
+  That is now written down next to the setting.
+- Restore and fetch Jobs set `NOTIFY_ON=never`: a restore is deliberate and
+  watched, so announcing it is noise.
+
+### Added
+
+- A test that every variable named in a manifest or an example is one the
+  image actually reads. A typo passes YAML validation and a dry run, then
+  silently does nothing.
+
+
 ## [0.2.0] — 2026-09-12
 
 Backups now say when they fail. Everything here is additive: no environment
@@ -213,6 +281,7 @@ Carried over from the predecessor repositories:
 - **arm64 is only built on release tags**, so it can break between releases.
   `mise run verify:arm` covers it in the meantime.
 
-[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/quyendv/platform-backup/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/quyendv/platform-backup/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/quyendv/platform-backup/releases/tag/v0.1.0
