@@ -23,11 +23,11 @@ Plus the [shared variables](../../README.md#environment).
 Backups need one capability, not root:
 
 ```bash
-vault policy write backup-raft backends/vault/policies/backup-raft.hcl
+vault policy write backup-raft policies/backup-raft.hcl
 vault token create -policy=backup-raft -period=24h -orphan
 ```
 
-[`policies/backup-raft.hcl`](../../backends/vault/policies/backup-raft.hcl)
+[`policies/backup-raft.hcl`](policies/backup-raft.hcl)
 grants `read` on `sys/storage/raft/snapshot`, plus `sys/health` and
 `auth/token/renew-self`. It is a periodic token: renew it before the period
 expires, or rotate the secret.
@@ -59,5 +59,5 @@ committing to any of this.
 
 ## Kubernetes
 
-[`backends/vault/k8s/`](../../backends/vault/k8s/). The image runs as uid 100,
+[`k8s/`](k8s/). The image runs as uid 100,
 the base image's unprivileged `vault` user, so it satisfies `runAsNonRoot`.

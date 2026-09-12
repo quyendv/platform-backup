@@ -63,7 +63,9 @@ backend_dump() {
   local dir="$1" name="etcd-${RUN_ID}.db"
 
   log_info "etcdctl: $(etcdctl version | head -n1)"
-  _etcdctl snapshot save "${dir}/${name}" >&2
+  # Checked explicitly; see the note in the postgresql adapter.
+  _etcdctl snapshot save "${dir}/${name}" >&2 ||
+    die "etcdctl snapshot save failed against ${ETCDCTL_ENDPOINTS}"
 
   printf '%s' "$name"
 }
@@ -86,6 +88,6 @@ plane node, with etcd stopped:
     --initial-advertise-peer-urls <peer-url> \
     --data-dir /var/lib/etcd
 
-Then start etcd again. See docs/backends/etcd.md.
+Then start etcd again. See backends/etcd/README.md.
 HINT
 }

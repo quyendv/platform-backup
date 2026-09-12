@@ -75,11 +75,36 @@ These are load-bearing. Breaking one is a data-loss bug, not a style regression.
   credentials problem. And under `set -euo pipefail` a bare `grep` with no
   match aborts the job right after a successful upload; `prune_select` guards
   that one.
+- **An adapter must check its own dump command.** `backend_dump` ends by
+  echoing the filename, so the function's status reflects that echo, and
+  errexit is disabled inside the tested context the driver calls it from. An
+  unchecked failure is reported three steps later as "artifact too small".
 - **Never pipe into `head` under pipefail** where the producer may still be
   running: SIGPIPE makes the pipeline return 141. Use `find -print -quit`.
 - **Local and S3 share one layout** (`<run>/<artifact>`). That is what lets a
   single `prune_select` serve both sides; keep them symmetrical.
 - **Timestamps are UTC.**
+
+## Reporting
+
+`_run_and_report` wraps the whole dispatch so there is exactly one place a
+run's outcome is decided, and no path that forgets to report. It writes
+`.last-run.json`, which the `HEALTHCHECK` and the notifier both read, and which
+is what makes a failing schedule visible at all.
+
+Two things are load-bearing there:
+
+- **The dispatch runs in a subshell** because `die` calls `exit`; in the same
+  shell that unwinds past the reporting, which is how a failed run used to
+  leave no record. The run id travels back out through `RUN_ID_FILE`.
+- **That subshell re-enables errexit.** The `set +e` outside it exists only so
+  `PIPESTATUS` can be read; without `set -e` inside, the entire run executed
+  without errexit and a failed `pg_dump` surfaced three steps later as
+  "artifact too small".
+
+Notifications must never change a run's outcome: each channel runs isolated,
+every curl is bounded by `NOTIFY_TIMEOUT`, and `notify_run` always returns 0.
+Webhook URLs are credentials — failures name the channel, never the endpoint.
 
 ## Environment contract
 
@@ -95,7 +120,7 @@ already defaults to path-style; without one, virtual-hosted. Only
 `s3.addressing_style` in `~/.aws/config` can change it.
 
 Adding or renaming a variable means touching all of: the adapter or `lib/`, the
-backend's `.env.example`, its `k8s/*.yaml`, its `docs/backends/*.md`, and the
+backend's `.env.example`, its `k8s/*.yaml`, its `its own README.md`, and the
 table in `README.md`.
 
 ## Testing

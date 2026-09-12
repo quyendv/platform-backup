@@ -50,6 +50,6 @@ Restoring into a database that is neither dropped nor cleaned will produce
 
 ## Kubernetes
 
-[`backends/postgresql/k8s/`](../../backends/postgresql/k8s/) has a CronJob with a
+[`k8s/`](k8s/) has a CronJob with a
 split ConfigMap/Secret, and a one-shot restore Job that reuses both so the
 object-store settings cannot drift between backup and restore.

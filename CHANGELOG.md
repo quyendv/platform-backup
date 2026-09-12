@@ -9,6 +9,63 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-12
+
+Backups now say when they fail. Everything here is additive: no environment
+variable changed meaning, and 0.1.0 backups restore unchanged.
+
+### Added
+
+- **A state file.** Every run writes `${BACKUP_DIR}/.last-run.json` with its
+  outcome, backend, run id, error, exit code and duration.
+- **A container healthcheck.** A scheduled container whose backups fail used
+  to stay `Up` with exit code 0, the only evidence a line in the log. It now
+  reports `unhealthy`, which `docker ps`, restart policies and anything
+  watching container health can see. `HEALTHCHECK_MAX_AGE` additionally
+  catches a schedule that quietly stopped firing.
+- **Notifications** to Slack, Google Chat, Discord, Telegram, a structured
+  webhook and email over SMTP — any number at once, each enabled by its own
+  variables. The message leads with a status icon and headline, then aligned
+  fields (run, target, duration, exit, error), rendered per channel: HTML for
+  Telegram, fenced markdown for the chat webhooks, plain text for email. `NOTIFY_ON` selects `never`, `change`, `failure` (default) or
+  `always`; `failure` includes the first success after a failure, so you learn
+  when the problem went away. A channel that fails is logged and skipped and
+  never changes a run's outcome.
+
+### Fixed
+
+- **A failed run left no record.** `die` exits, so running the dispatch in the
+  same shell unwound past the reporting entirely.
+- **Fetch chose its artifact by directory order.** It took the first file
+  that was not a `.sha256`, which is not deterministic — the same run folder
+  selected a different file on a CI runner than it did locally. The checksum
+  sidecar now identifies the artifact, which also makes it the marker of a
+  complete run: half an upload is rejected up front instead of part-way
+  through a restore.
+- **A long error lost the notification.** Telegram rejects a message over
+  4096 characters and Discord over 2000, so a verbose dump failure — the case
+  that matters most — produced no message at all. The error is now capped at
+  `NOTIFY_MAX_ERROR_CHARS` for chat; webhook and email keep it whole.
+- **HTML escaping was broken by a bash 5.2 change.** An unescaped `&` in the
+  replacement half of a parameter substitution now means "the text that
+  matched", so escaping `<` produced `<lt;` rather than `&lt;`, and Telegram
+  rejects a message whose entities it cannot parse. Escaping goes through sed.
+- **Adapters could swallow a failed dump.** `backend_dump` ends by echoing the
+  artifact filename, so the function's status reflected that echo rather than
+  the dump, and errexit is disabled inside the tested context the driver calls
+  it from. A failed `pg_dump` was reported three steps later as "artifact too
+  small". Every adapter now checks its own tool.
+
+### Changed
+
+- Each backend's documentation moved from `docs/backends/<name>.md` to
+  `backends/<name>/README.md`, beside the code it describes.
+- The recorded error is the **first** one, not the last: the earliest is the
+  cause, everything after it is the driver unwinding.
+- `jq` is installed in all four images, for correct JSON in state, payloads
+  and the healthcheck.
+
+
 ## [0.1.0] — 2026-09-11
 
 First release of the consolidated repository. It replaces four separate
@@ -156,5 +213,6 @@ Carried over from the predecessor repositories:
 - **arm64 is only built on release tags**, so it can break between releases.
   `mise run verify:arm` covers it in the meantime.
 
-[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/quyendv/platform-backup/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/quyendv/platform-backup/releases/tag/v0.1.0

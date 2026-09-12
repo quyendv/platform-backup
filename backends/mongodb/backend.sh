@@ -17,7 +17,9 @@ backend_dump() {
   local dir="$1" name="mongodb-${RUN_ID}.archive.gz"
 
   log_info "mongodump: $(mongodump --version | head -n1)"
-  mongodump --uri="$MONGODB_URI" --gzip --archive="${dir}/${name}"
+  # Checked explicitly; see the note in the postgresql adapter.
+  mongodump --uri="$MONGODB_URI" --gzip --archive="${dir}/${name}" ||
+    die "mongodump failed"
 
   printf '%s' "$name"
 }

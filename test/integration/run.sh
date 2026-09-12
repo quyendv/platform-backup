@@ -2,10 +2,10 @@
 # End-to-end: seed a real target, back it up to a real MinIO, destroy the data,
 # restore it, and assert the data came back.
 #
-# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb vault schedule)
+# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb vault schedule notify)
 #
 # etcd is not covered here: it needs a real etcd with TLS on the host network,
-# and its restore runs outside the container by design. See docs/backends/etcd.md.
+# and its restore runs outside the container by design. See backends/etcd/README.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -54,6 +54,7 @@ s3_ls() {
 services_for() {
   case "$1" in
     postgresql | schedule) printf 'postgres' ;;
+    notify) printf 'postgres notifysink' ;;
     mongodb) printf 'mongo' ;;
     vault) printf 'vault' ;;
   esac
@@ -61,10 +62,17 @@ services_for() {
 
 start_stack() {
   local wanted=("$@") svc services=(minio) b
+  local extra=()
   for b in "${wanted[@]}"; do
     svc="$(services_for "$b")"
-    [[ -n "$svc" ]] && services+=("$svc")
+    # A test can need more than one service, so split rather than append the
+    # whole string as a single name.
+    [[ -n "$svc" ]] || continue
+    read -ra extra <<<"$svc"
+    services+=("${extra[@]}")
   done
+  # Deduplicate: two tests may share a target.
+  mapfile -t services < <(printf '%s\n' "${services[@]}" | awk '!seen[$0]++')
   info "Starting ${services[*]}"
   "${COMPOSE[@]}" up -d --wait "${services[@]}"
   docker run --rm --network "$NETWORK" \
@@ -190,6 +198,53 @@ test_schedule() {
   docker rm -f "$name" >/dev/null 2>&1
 }
 
+# Notifications are the one thing that must never change a run's outcome, and
+# the one thing you only find out about when you needed it.
+test_notify() {
+  local image=ghcr.io/quyendv/platform-backup/postgresql:pg17
+  local prefix=it/notify
+
+  info "notify: a failing backup must reach the webhook"
+  "${COMPOSE[@]}" exec -T notifysink sh -c 'true' >/dev/null 2>&1 || true
+
+  # A deliberately wrong password: the dump fails, nothing is uploaded.
+  docker run --rm --network "$NETWORK" \
+    -e POSTGRES_HOST=postgres -e POSTGRES_PORT=5432 \
+    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=wrong -e POSTGRES_DB=appdb \
+    -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+    -e AWS_REGION=us-east-1 -e AWS_ENDPOINT_URL_S3=http://minio:9000 \
+    -e S3_BUCKET="$BUCKET" -e S3_PREFIX="$prefix" \
+    -e NOTIFY_ON=failure -e NOTIFY_WEBHOOK_URL=http://notifysink:8080/hook \
+    "$image" >/dev/null 2>&1 && fail "notify: the backup was supposed to fail"
+
+  local payload
+  payload="$("${COMPOSE[@]}" logs notifysink 2>/dev/null | grep -o '{.*}' | tail -n1)"
+  [[ -n "$payload" ]] || fail "notify: the webhook received nothing"
+  # The sink wraps the request body in its own JSON, so the payload has to be
+  # decoded rather than grepped.
+  local outcome backend
+  outcome="$(jq -r '.body | fromjson | .outcome' <<<"$payload")"
+  backend="$(jq -r '.body | fromjson | .backend' <<<"$payload")"
+  [[ "$outcome" == "failure" ]] ||
+    fail "notify: expected outcome=failure, got '${outcome}'"
+  [[ "$backend" == "postgresql" ]] ||
+    fail "notify: expected backend=postgresql, got '${backend}'"
+  pass "notify: a failed backup reaches the webhook with structured detail"
+
+  info "notify: an unreachable notifier must not fail a good backup"
+  docker run --rm --network "$NETWORK" \
+    -e POSTGRES_HOST=postgres -e POSTGRES_PORT=5432 \
+    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=appdb \
+    -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+    -e AWS_REGION=us-east-1 -e AWS_ENDPOINT_URL_S3=http://minio:9000 \
+    -e S3_BUCKET="$BUCKET" -e S3_PREFIX="$prefix" \
+    -e NOTIFY_ON=always -e NOTIFY_WEBHOOK_URL=http://127.0.0.1:1/nope \
+    -e NOTIFY_TIMEOUT=3 \
+    "$image" >/dev/null 2>&1 ||
+    fail "notify: an unreachable webhook turned a good backup into a failure"
+  pass "notify: an unreachable webhook leaves the backup succeeding"
+}
+
 vault_exec() {
   "${COMPOSE[@]}" exec -T -e VAULT_ADDR=http://127.0.0.1:8200 \
     ${VAULT_TOKEN:+-e VAULT_TOKEN="$VAULT_TOKEN"} vault "$@"
@@ -246,7 +301,7 @@ test_vault() {
 
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb vault schedule)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb vault schedule notify)
 
   start_stack "${backends[@]}"
   local b

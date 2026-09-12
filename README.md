@@ -15,9 +15,9 @@ restore its own data.
 | `ghcr.io/quyendv/platform-backup/etcd` | `latest` |
 | `ghcr.io/quyendv/platform-backup/vault` | `latest` |
 
-Per-backend documentation: [postgresql](docs/backends/postgresql.md) ·
-[mongodb](docs/backends/mongodb.md) · [etcd](docs/backends/etcd.md) ·
-[vault](docs/backends/vault.md)
+Each backend documents itself next to its own code:
+[postgresql](backends/postgresql/) · [mongodb](backends/mongodb/) ·
+[etcd](backends/etcd/) · [vault](backends/vault/)
 
 ## Quick start
 
@@ -88,6 +88,77 @@ an `~/.aws/config` containing `s3.addressing_style`.
 | `MIN_ARTIFACT_BYTES` | `128` | Floor below which a dump is treated as failed |
 
 Backend-specific variables are documented on each backend's page.
+
+## Knowing when a backup fails
+
+A one-shot run exits non-zero and a Kubernetes Job goes `Failed`, so those
+surface on their own. A **scheduled container does not**: without help it stays
+`Up` with exit code 0 while every backup fails, and the only evidence is a line
+in the log. Three things address that.
+
+**Every run records its outcome** to `${BACKUP_DIR}/.last-run.json`:
+
+```json
+{"schema":1,"outcome":"failure","backend":"postgresql","run_id":"20260911_020000",
+ "error":"pg_dump failed for appdb on db.internal","exit_code":1,
+ "duration_s":3,"finished_at":"2026-09-11T02:00:03Z"}
+```
+
+**The image declares a `HEALTHCHECK`** that reads it, so a failing schedule
+shows up in `docker ps`, in restart policies and to anything watching container
+health:
+
+```
+$ docker ps
+STATUS
+Up 4 minutes (unhealthy)
+```
+
+Set `HEALTHCHECK_MAX_AGE` (seconds) to also go unhealthy when the last *success*
+is too old — that is what catches a schedule that quietly stopped firing, which
+otherwise looks identical to one that never ran.
+
+**Notifications** go to any number of channels at once. A channel is enabled by
+its own variables being present; one that fails is logged and skipped and never
+changes the outcome of a backup.
+
+| Channel | Variables |
+|---|---|
+| Slack | `NOTIFY_SLACK_WEBHOOK_URL` |
+| Google Chat | `NOTIFY_GOOGLE_CHAT_WEBHOOK_URL` |
+| Discord | `NOTIFY_DISCORD_WEBHOOK_URL` |
+| Telegram | `NOTIFY_TELEGRAM_BOT_TOKEN` + `NOTIFY_TELEGRAM_CHAT_ID` |
+| Webhook (structured JSON) | `NOTIFY_WEBHOOK_URL` |
+| Email | `NOTIFY_SMTP_URL` + `NOTIFY_SMTP_FROM` + `NOTIFY_SMTP_TO` |
+
+Messages are rendered per channel — HTML for Telegram, fenced markdown for
+Slack, Discord and Google Chat, plain text for email — and read the same
+everywhere:
+
+```
+🔴 db-prod-01 › postgresql — FAILED
+
+Run     : 20260911_020000 UTC
+Target  : s3://backups/prod/postgresql
+Duration: 12 sec
+Exit    : 1
+Error   :
+  pg_dump: error: connection to server at "db.internal" (10.0.0.5), port
+  5432 failed: FATAL: password authentication failed for user "backup"
+```
+
+Chat services cap message length — Telegram rejects anything over 4096
+characters outright — so the error is truncated there at
+`NOTIFY_MAX_ERROR_CHARS` and marked as such. The webhook and email keep it
+whole.
+
+`NOTIFY_ON` decides when: `never`, `change` (transitions only), `failure`
+(default — every failure, plus the recovery) or `always`. The recovery message
+matters more than it sounds: without it you never learn the problem went away.
+
+Email uses curl's own SMTP support, so it needs nothing the image does not
+already have. `NOTIFY_TIMEOUT` (default 15s) bounds every attempt, so an
+unreachable notifier cannot hold a run open.
 
 ## Retention
 
