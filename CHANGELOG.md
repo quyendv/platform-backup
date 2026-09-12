@@ -11,6 +11,14 @@ between minor versions. Each change will be listed here with its migration.
 
 ### Added
 
+- **A secret scan that actually gates.** `mise run scan:secrets` runs gitleaks
+  over the full history and is part of `check`, so CI enforces it. The
+  pre-commit hook stays, but a hook lives in a clone: it is absent until
+  someone installs it, and `--no-verify` skips it.
+- **`mise run test:k8s`**, which proves the offline restore runbook on a kind
+  cluster with the Bitnami chart and two replicas. It applies the manifest the
+  repository ships rather than a copy, so the documented procedure cannot rot
+  unnoticed.
 - **`FETCH_DECOMPRESS`**, so `MODE=fetch` unpacks a `.gz` artifact ready to
   place in a server's data directory. That offline path — place the file,
   restart — is far cheaper than replaying into a live server where the artifact

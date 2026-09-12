@@ -8,6 +8,7 @@ hadolint   = "2.15.1"
 actionlint = "1.7.12"
 bats       = "1.14.0"
 pre-commit = "4.6.0"
+gitleaks   = "8.30.1"
 
 # Only for `mise run test:k8s`, which proves the offline restore procedure the
 # documentation gives actually works on a real cluster.
@@ -38,17 +39,30 @@ run = "hadolint backends/*/Dockerfile"
 description = "actionlint the GitHub workflows"
 run = "actionlint"
 
+[tasks."scan:secrets"]
+description = "Scan the whole history for committed secrets"
+# The pre-commit hook only sees staged changes, and only on clones where
+# someone ran `pre-commit install` and did not pass --no-verify. This is the
+# copy that actually gates: CI runs it on every push.
+run = "gitleaks git --no-banner --redact --verbose ."
+
 [tasks.lint]
 description = "All linters"
 depends = ["lint:sh", "lint:docker", "lint:ci"]
 
 [tasks.check]
 description = "Everything CI runs on a pull request"
-depends = ["fmt:check", "lint", "test:unit"]
+depends = ["fmt:check", "lint", "scan:secrets", "test:unit"]
 
 [tasks."test:unit"]
 description = "bats unit tests for lib/"
 run = "bats --print-output-on-failure test/unit"
+
+[tasks."test:k8s"]
+description = "Prove the offline restore runbook on a real kind cluster (~10 min)"
+# Applies the manifest the repo ships rather than a copy, so the documented
+# procedure cannot rot unnoticed.
+run = "test/k8s/run.sh"
 
 [tasks."test:integration"]
 description = "End-to-end backup/fetch/restore against MinIO + real targets"

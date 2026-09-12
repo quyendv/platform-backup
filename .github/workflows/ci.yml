@@ -23,6 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The secret scan reads history, and a shallow clone has none. This
+          # is the copy that actually gates: the pre-commit hook only exists on
+          # clones where someone installed it and did not pass --no-verify.
+          fetch-depth: 0
       - uses: jdx/mise-action@v4
       # The same command developers run locally, with the same pinned tools.
       - run: mise run check

@@ -226,11 +226,22 @@ enough to catch a truncated archive would reject a legitimate backup.
 mise install          # pinned shellcheck, shfmt, hadolint, actionlint, bats
 mise run check        # format check, all linters, 79 unit tests — what CI runs
 mise run build        # build all images for the host architecture
-mise run test:integration   # real MinIO + Postgres + Mongo, backup→restore→verify
+mise run test:integration   # real MinIO + Postgres + Mongo + Redis, backup→restore→verify
+mise run test:k8s           # kind + the Bitnami chart: the offline restore runbook (~10 min)
+mise run scan:secrets       # gitleaks over the whole history
 ```
 
 `mise run check` is exactly the command CI runs, against the same pinned tool
 versions.
+
+`check` includes a gitleaks scan of the full history. The pre-commit hook scans
+staged changes too, but hooks live in a clone: they are absent until someone
+runs `pre-commit install`, and `--no-verify` skips them. CI is what actually
+gates, which is why the scan is in `check` rather than only in the hook.
+
+`test:k8s` applies the restore manifest this repository ships, rather than a
+copy of it. A runbook nobody executes drifts from the code it describes, and
+this one has three failure modes that only appear on a real cluster.
 
 ### Verifying arm64
 

@@ -16,7 +16,9 @@ mise run check              # fmt:check + all linters + unit tests — exactly w
 mise run fmt                # shfmt -w
 mise run test:unit          # bats only
 mise run build              # docker buildx bake --load, host arch
-mise run test:integration   # real MinIO + Postgres + Mongo, backup→restore→verify
+mise run test:integration   # real MinIO + Postgres + Mongo + Redis
+mise run test:k8s           # kind + Bitnami chart: the offline restore runbook (~10 min)
+mise run scan:secrets       # gitleaks over the full history
 
 # One bats file, or one test
 mise exec -- bats test/unit/retention.bats
@@ -146,6 +148,22 @@ Timing-dependent assertions are not tests. The SIGPIPE bug reproduces at 3000
 files in a plain shell but not under bats, so it is guarded structurally
 instead. Where a test needs determinism, add a seam and say why:
 `SUPERCRONIC_BIN` and `stub_fixed_run_id` exist only for that.
+
+## Restore strategies
+
+Every restore here writes into a **running** server, which needs no volume
+access and no restart rights. Where the artifact is the server's own state file
+— redis and etcd — it can instead be placed on the volume and loaded at start,
+which measured 130 ms against 11 seconds for 200k Redis keys and uses half the
+memory. `MODE=fetch` with `FETCH_DECOMPRESS=true` produces the file to place.
+
+None of it is atomic, so restore assumes the clients are quiesced. Say so in
+any new backend's documentation.
+
+`test/k8s/run.sh` executes the shipped manifest, not a copy. Three things about
+that procedure only appear on a real cluster, and all three are load-bearing:
+AOF silently wins over a placed RDB; the AOF must be written by the same Redis
+build that will load it; and charts routinely disable `FLUSHDB`.
 
 ## Branching
 
