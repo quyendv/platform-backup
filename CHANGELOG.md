@@ -11,6 +11,12 @@ between minor versions. Each change will be listed here with its migration.
 
 ### Added
 
+- **`FETCH_DECOMPRESS`**, so `MODE=fetch` unpacks a `.gz` artifact ready to
+  place in a server's data directory. That offline path — place the file,
+  restart — is far cheaper than replaying into a live server where the artifact
+  is the server's own state format: measured at 130 ms against 11 seconds for
+  200k Redis keys, and half the memory. Documented for redis with a runbook for
+  Docker and for the Bitnami chart with replicas, verified on a real cluster.
 - **A Redis backend**, `ghcr.io/quyendv/platform-backup/redis`. RDB snapshots
   pulled over the network with `redis-cli --rdb`; restore stages the RDB on a
   throwaway `redis-server` inside the container and `MIGRATE`s the keys across,
@@ -32,6 +38,10 @@ between minor versions. Each change will be listed here with its migration.
 
 ### Changed
 
+- **Restore now documents that it assumes no traffic.** None of these restores
+  are atomic, so writes arriving while one runs interleave with the restored
+  data and nothing afterwards distinguishes them. Previously implied, now
+  stated.
 - **Kubernetes manifests use a single Secret**, not a Secret plus a ConfigMap.
   Splitting them only pays off where RBAC separates who may read configuration
   from who may read credentials, or where an external secret manager owns the
