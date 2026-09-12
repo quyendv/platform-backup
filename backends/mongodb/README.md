@@ -37,5 +37,12 @@ same tools, pinned by `DBTOOLS_VERSION`.
 
 ## Kubernetes
 
-[`k8s/`](k8s/). `MONGODB_URI` contains
-credentials, so it lives in the Secret rather than the ConfigMap.
+[`k8s/`](k8s/). `MONGODB_URI` carries the credentials, which is why the whole
+configuration lives in a Secret.
+
+Notifications are configured in the same Secret. Leave `NOTIFY_ON=failure`
+there: each run is a fresh pod with an `emptyDir`, so the state file never
+survives and "previous outcome" is always unknown — `change` would fire on
+every run, and a recovery message can never be sent. Failures notify either
+way, which is the part that matters. Mount a PersistentVolumeClaim at
+`/backup` if you want both.

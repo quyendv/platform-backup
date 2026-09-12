@@ -1,5 +1,5 @@
-# One-shot restore for vault. Reuses the CronJob's ConfigMap and Secret, so the
-# object store settings cannot drift between backup and restore.
+# One-shot restore for vault. Reuses the CronJob's Secret, so the object store
+# settings cannot drift between backup and restore.
 #
 # This replaces the entire Raft state and needs a token far more privileged than backup-raft.
 #
@@ -18,7 +18,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: restore
-          image: ghcr.io/quyendv/platform-backup/vault:latest
+          image: ghcr.io/quyendv/platform-backup/vault:0.2.0
           imagePullPolicy: Always
           env:
             - name: MODE
@@ -26,11 +26,12 @@ spec:
             # Empty selects the newest run; set YYYYMMDD_HHMMSS to pin one.
             - name: RESTORE_TIMESTAMP
               value: ""
+            # A restore is deliberate and watched; notifying about it is noise.
+            - name: NOTIFY_ON
+              value: "never"
           envFrom:
-            - configMapRef:
-                name: vault-backup-config
             - secretRef:
-                name: vault-backup-secret
+                name: vault-backup
           volumeMounts:
             - name: restore
               mountPath: /restore

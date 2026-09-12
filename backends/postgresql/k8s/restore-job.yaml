@@ -1,5 +1,5 @@
-# One-shot restore for postgresql. Reuses the CronJob's ConfigMap and Secret, so the
-# object store settings cannot drift between backup and restore.
+# One-shot restore for postgresql. Reuses the CronJob's Secret, so the object store
+# settings cannot drift between backup and restore.
 #
 # Set RESTORE_DROP=true to drop and recreate the database first, or RESTORE_CLEAN=true to pass --clean --if-exists.
 #
@@ -18,7 +18,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: restore
-          image: ghcr.io/quyendv/platform-backup/postgresql:pg17
+          image: ghcr.io/quyendv/platform-backup/postgresql:0.2.0-pg17
           imagePullPolicy: Always
           env:
             - name: MODE
@@ -26,11 +26,12 @@ spec:
             # Empty selects the newest run; set YYYYMMDD_HHMMSS to pin one.
             - name: RESTORE_TIMESTAMP
               value: ""
+            # A restore is deliberate and watched; notifying about it is noise.
+            - name: NOTIFY_ON
+              value: "never"
           envFrom:
-            - configMapRef:
-                name: postgresql-backup-config
             - secretRef:
-                name: postgresql-backup-secret
+                name: postgresql-backup
           volumeMounts:
             - name: restore
               mountPath: /restore

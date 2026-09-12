@@ -9,6 +9,29 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+### Changed
+
+- **Kubernetes manifests use a single Secret**, not a Secret plus a ConfigMap.
+  Splitting them only pays off where RBAC separates who may read configuration
+  from who may read credentials, or where an external secret manager owns the
+  Secret; otherwise it is a second object to keep in sync, and it puts the
+  bucket and endpoint somewhere usually readable by more principals.
+- **Notifications are configured in the manifests**, with `NOTIFY_ON=failure`
+  and every channel listed commented out. A CronJob gives each run a fresh
+  pod, so the state file never survives and "previous outcome" is always
+  unknown: failures notify as normal, `change` would fire on every run, and a
+  recovery message can only be sent if `/backup` is a PersistentVolumeClaim.
+  That is now written down next to the setting.
+- Restore and fetch Jobs set `NOTIFY_ON=never`: a restore is deliberate and
+  watched, so announcing it is noise.
+
+### Added
+
+- A test that every variable named in a manifest or an example is one the
+  image actually reads. A typo passes YAML validation and a dry run, then
+  silently does nothing.
+
+
 ## [0.2.0] — 2026-09-12
 
 Backups now say when they fail. Everything here is additive: no environment

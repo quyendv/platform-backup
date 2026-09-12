@@ -1,5 +1,5 @@
-# One-shot fetch for etcd. Reuses the CronJob's ConfigMap and Secret, so the
-# object store settings cannot drift between backup and fetch.
+# One-shot fetch for etcd. Reuses the CronJob's Secret, so the object store
+# settings cannot drift between backup and fetch.
 #
 # etcd cannot be restored from a container: this only downloads the snapshot. Run etcdctl snapshot restore on each member host with etcd stopped.
 #
@@ -18,7 +18,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: fetch
-          image: ghcr.io/quyendv/platform-backup/etcd:latest
+          image: ghcr.io/quyendv/platform-backup/etcd:0.2.0
           imagePullPolicy: Always
           env:
             - name: MODE
@@ -26,11 +26,12 @@ spec:
             # Empty selects the newest run; set YYYYMMDD_HHMMSS to pin one.
             - name: RESTORE_TIMESTAMP
               value: ""
+            # A restore is deliberate and watched; notifying about it is noise.
+            - name: NOTIFY_ON
+              value: "never"
           envFrom:
-            - configMapRef:
-                name: etcd-backup-config
             - secretRef:
-                name: etcd-backup-secret
+                name: etcd-backup
           volumeMounts:
             - name: restore
               mountPath: /restore
