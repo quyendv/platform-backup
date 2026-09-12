@@ -1,0 +1,42 @@
+# One-shot restore for redis. Reuses the CronJob's Secret, so the object store
+# settings cannot drift between backup and restore.
+#
+# Set RESTORE_FLUSH=true to empty the target database first. Restore stages the
+# RDB on a redis-server inside this pod, so give it a memory limit at least the
+# size of the dataset or it will be OOMKilled part way through.
+#
+#   kubectl apply -f backends/redis/k8s/restore-job.yaml
+#   kubectl logs -f job/redis-restore -n <your-namespace>
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-restore
+  namespace: <your-namespace>
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: restore
+          image: ghcr.io/quyendv/platform-backup/redis:redis8
+          imagePullPolicy: Always
+          env:
+            - name: MODE
+              value: "restore"
+            # Empty selects the newest run; set YYYYMMDD_HHMMSS to pin one.
+            - name: RESTORE_TIMESTAMP
+              value: ""
+            # A restore is deliberate and watched; notifying about it is noise.
+            - name: NOTIFY_ON
+              value: "never"
+          envFrom:
+            - secretRef:
+                name: redis-backup
+          volumeMounts:
+            - name: restore
+              mountPath: /restore
+      volumes:
+        - name: restore
+          emptyDir: {}

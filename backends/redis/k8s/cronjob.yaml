@@ -1,0 +1,94 @@
+# Scheduled redis backup. Replace <your-namespace> and fill in the Secret.
+#
+#   kubectl apply -f backends/redis/k8s/cronjob.yaml
+#   kubectl create job --from=cronjob/redis-backup redis-backup-now -n <your-namespace>
+#
+# One Secret rather than a ConfigMap alongside it: splitting them only buys
+# anything if RBAC separates who may read config from who may read credentials,
+# or if an external secret manager owns the Secret. Otherwise it is a second
+# object to keep in sync, and it puts the bucket and endpoint somewhere that is
+# usually readable by more principals.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-backup
+  namespace: <your-namespace>
+type: Opaque
+stringData:
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  # One URL carries host, port, password and database, which is why the whole
+  # configuration lives in a Secret.
+  REDIS_URL: "redis://:password@redis.<your-namespace>.svc.cluster.local:6379/0"
+
+  # ── Object storage ─────────────────────────────────────────────────────────
+  # Read by the AWS CLI itself. Omit both keys entirely to authenticate with an
+  # IRSA service account or an instance role instead.
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+  AWS_REGION: "us-east-1"
+  # Required for MinIO / Ceph / R2 / Spaces; omit for real AWS.
+  AWS_ENDPOINT_URL_S3: "https://minio.example.com"
+
+  # Read by this image.
+  S3_BUCKET: "your-bucket"
+  S3_PREFIX: "backups/redis"
+
+  # ── Retention ──────────────────────────────────────────────────────────────
+  # Counts, not days. 0 disables pruning on that side. KEEP_LOCAL barely
+  # matters here: every run gets a fresh pod, so the local copy is scratch.
+  KEEP_LOCAL: "1"
+  KEEP_REMOTE: "30"
+
+  # ── Notifications ──────────────────────────────────────────────────────────
+  # Leave NOTIFY_ON as "failure": each run is a fresh pod with an emptyDir, so
+  # the state file never survives and "previous outcome" is always unknown.
+  # "change" would therefore fire on every run, and a recovery message can
+  # never be sent — mount a PersistentVolumeClaim at /backup if you want both.
+  #
+  # Failures always notify regardless, which is the part that matters.
+  NOTIFY_ON: "failure"
+  # Uncomment the channels you use; several can run at once. A channel that
+  # fails is logged and skipped and never changes the backup's outcome.
+  # NOTIFY_TELEGRAM_BOT_TOKEN: ""
+  # NOTIFY_TELEGRAM_CHAT_ID: ""
+  # NOTIFY_SLACK_WEBHOOK_URL: ""
+  # NOTIFY_GOOGLE_CHAT_WEBHOOK_URL: ""
+  # NOTIFY_DISCORD_WEBHOOK_URL: ""
+  # NOTIFY_WEBHOOK_URL: ""
+  # NOTIFY_SMTP_URL: "smtps://user:password@smtp.example.com:465"
+  # NOTIFY_SMTP_FROM: "backup@example.com"
+  # NOTIFY_SMTP_TO: "ops@example.com"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: redis-backup
+  namespace: <your-namespace>
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      # A backup that cannot succeed should surface, not retry all day.
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: ghcr.io/quyendv/platform-backup/redis:redis8
+              imagePullPolicy: Always
+              envFrom:
+                - secretRef:
+                    name: redis-backup
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            # Scratch for this run only. The Job's own status is what reports a
+            # failure to the cluster; KEEP_REMOTE is what retains history.
+            - name: backup
+              emptyDir: {}
