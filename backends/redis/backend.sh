@@ -179,7 +179,20 @@ HINT
 
   if bool_is_true RESTORE_FLUSH; then
     log_warn "RESTORE_FLUSH is set — emptying database ${db} on ${host}:${port}"
-    _redis -n "$db" flushdb >&2 || die "FLUSHDB failed"
+    _redis -n "$db" flushdb >&2 || {
+      _redis_stage_stop
+      die "$(
+        cat <<'HINT'
+FLUSHDB failed. It is very likely disabled on the server rather than broken:
+managed Redis and the Bitnami chart both rename FLUSHDB and FLUSHALL away by
+default (`rename-command FLUSHDB ""`), so the command comes back as unknown.
+
+Either re-enable it for the restore, or leave RESTORE_FLUSH unset — keys are
+written with REPLACE, so the restore still overwrites everything the backup
+contains and only leaves keys that are not in it.
+HINT
+      )"
+    }
   fi
 
   # MIGRATE moves keys in batches, preserving type and TTL. REPLACE overwrites

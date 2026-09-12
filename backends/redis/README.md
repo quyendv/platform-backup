@@ -58,6 +58,137 @@ Three things to know before relying on it:
   restoring part of the keyspace; use `MODE=fetch` and load the RDB into the
   server directly instead. Backup over TLS works normally.
 
+## Two ways to restore
+
+`MODE=restore` writes into a **running** server. It needs no volume access and
+no restart rights, which makes it the right choice for moving data into a new
+instance. It is also slow, and holds a second copy of the dataset in the
+restore container's memory.
+
+The alternative is to put the RDB on the server's own volume and start it.
+Measured on 200,000 keys (a 9.2 MB RDB):
+
+| | Time | Memory |
+|---|---|---|
+| `MODE=restore` (staging + MIGRATE) | **11 s** | dataset twice: staging + target |
+| Offline (place the file, start) | **130 ms** | dataset once, in Redis |
+
+Roughly 85× on this dataset, and the gap grows with key count — `MIGRATE` is
+O(keys) while loading an RDB is bounded by disk.
+
+**Both assume no traffic.** Neither restore is atomic: writes arriving during
+one interleave with the data being restored, and afterwards there is no way to
+tell which is which. Quiesce the clients first — that is a requirement, not a
+recommendation.
+
+### Offline restore: Docker
+
+```bash
+# 1. Fetch the artifact, uncompressed and checksum-verified
+docker run --rm \
+  -e MODE=fetch -e FETCH_DECOMPRESS=true \
+  -e REDIS_URL='redis://:password@cache:6379/0' \
+  -e AWS_ACCESS_KEY_ID=xxx -e AWS_SECRET_ACCESS_KEY=yyy \
+  -e AWS_ENDPOINT_URL_S3=https://minio.example.com \
+  -e S3_BUCKET=backups -e S3_PREFIX=backups/redis \
+  -v "$PWD/restore:/restore" \
+  ghcr.io/quyendv/platform-backup/redis:redis8
+
+# 2. Stop Redis
+docker compose stop redis
+
+# 3. Replace the data. Both files matter — see the AOF note below.
+docker run --rm -v redis_data:/data -v "$PWD/restore:/restore:ro" \
+  redis:8-alpine sh -c '
+    rm -rf /data/dump.rdb /data/appendonlydir
+    cp /restore/*/redis-*.rdb /data/dump.rdb'
+
+# 4. Start it again
+docker compose start redis
+```
+
+If your Redis runs with `appendonly yes`, step 3 is not enough on its own —
+read the next section before using it.
+
+### The AOF trap
+
+With `appendonly yes`, **Redis loads the AOF and ignores `dump.rdb` entirely**.
+Placing the RDB appears to work and changes nothing. Deleting the AOF does not
+help either: with AOF enabled and none present, Redis starts **empty** rather
+than falling back to the RDB.
+
+Both were measured, not assumed. There are two ways out:
+
+**Start once with AOF off**, which makes Redis load the RDB, then turn it back
+on so it rewrites the AOF from what it just loaded:
+
+```bash
+redis-server --appendonly no --dir /data   # loads dump.rdb
+redis-cli CONFIG SET appendonly yes        # rebuilds the AOF from memory
+```
+
+**Or build the AOF before starting**, which is what the Kubernetes Job below
+does, because changing a chart's configuration for one boot means two rollouts.
+
+Either way: the AOF must be written by **the same Redis build that will load
+it**. This image ships 8.10.1; a cluster running 8.0.3 rejected its AOF with
+`Can't handle RDB format version 15` and crash-looped. Stage with the server's
+own image, not with this one.
+
+### Offline restore: Kubernetes, Bitnami chart with replicas
+
+[`k8s/restore-offline-job.yaml`](k8s/restore-offline-job.yaml) is the Job; the
+sequence around it matters as much as the Job itself.
+
+**Scale the replicas down first.** They hold the state you are replacing, and
+with Sentinel one of them can be promoted the moment the master disappears —
+which would overwrite the restore with the data you are trying to discard.
+
+```bash
+NS=your-namespace
+REL=redis
+
+# 0. Stop the clients. Nothing below is atomic.
+
+# 1. Replicas first, then the master
+kubectl -n $NS scale statefulset $REL-replicas --replicas=0
+kubectl -n $NS scale statefulset $REL-master   --replicas=0
+kubectl -n $NS wait --for=delete pod/$REL-master-0 --timeout=5m
+
+# 2. Write the restored state onto the master's volume
+kubectl -n $NS apply -f k8s/restore-offline-job.yaml
+kubectl -n $NS wait --for=condition=complete job/redis-restore-offline --timeout=10m
+
+# 3. Master back, and check before letting replicas copy from it
+kubectl -n $NS scale statefulset $REL-master --replicas=1
+kubectl -n $NS wait --for=condition=ready pod/$REL-master-0 --timeout=5m
+kubectl -n $NS exec $REL-master-0 -c redis -- \
+  redis-cli -a "$PASSWORD" --no-auth-warning dbsize
+
+# 4. Replicas resync from the restored master
+kubectl -n $NS scale statefulset $REL-replicas --replicas=2
+kubectl -n $NS rollout status statefulset/$REL-replicas --timeout=10m
+```
+
+Step 3 before step 4 is deliberate: if the master came up wrong, replicas that
+have not started yet still hold nothing, and you can retry step 2 without
+having propagated the mistake.
+
+This sequence was run end to end against the Bitnami chart (`architecture=replication`,
+two replicas) on a kind cluster: corrupted data, restored, and both replicas
+came back reporting `master_link_status:up` with the restored contents.
+
+### RESTORE_FLUSH and managed Redis
+
+The Bitnami chart disables the flush commands by default
+(`rename-command FLUSHDB ""`), and managed Redis services usually do the same.
+`RESTORE_FLUSH=true` therefore fails there with "unknown command"; the adapter
+says so explicitly rather than leaving you with the raw error.
+
+Without it, keys are written with `REPLACE`: everything in the backup
+overwrites what is there, and only keys absent from the backup survive. The
+offline path has no such problem — it replaces the data files wholesale.
+
 ## Redis Cluster
 
 Refused, deliberately. A cluster shards its keyspace across masters and

@@ -55,6 +55,20 @@ it. See [backends/redis/](backends/redis/).
 
 `fetch` and `restore` ignore `SCHEDULE` and always run once.
 
+**Restore assumes no traffic.** None of these restores are atomic: writes
+arriving while one runs interleave with the data being restored, and afterwards
+nothing distinguishes them. Quiesce the clients first. That holds for both
+things a restore is usually for — moving data to a new instance, where the
+target has no traffic yet, and undoing an incident, where serving from a
+half-restored database is worse than serving nothing.
+
+Restores here write into a **running** server, which needs no volume access and
+no restart rights. Where the artifact is the server's own state file — redis
+and etcd — placing it on the volume and restarting is far faster (measured at
+85× for Redis) and uses half the memory. Those backends document the procedure:
+[redis](backends/redis/#two-ways-to-restore), [etcd](backends/etcd/#restore).
+`MODE=fetch` with `FETCH_DECOMPRESS=true` produces a ready-to-place file.
+
 ## Environment
 
 Two groups, deliberately prefixed differently. `AWS_*` is read by the AWS CLI
@@ -89,6 +103,7 @@ an `~/.aws/config` containing `s3.addressing_style`.
 | `KEEP_LOCAL` | `3` | Runs kept on disk; `0` disables pruning |
 | `KEEP_REMOTE` | `30` | Runs kept in S3; `0` disables pruning |
 | `RESTORE_TIMESTAMP` | *(newest)* | Pin a run, `YYYYMMDD_HHMMSS` |
+| `FETCH_DECOMPRESS` | `false` | `fetch` also unpacks a `.gz` artifact, ready to place |
 | `DRY_RUN` | `false` | Log what would happen, change nothing |
 | `MIN_ARTIFACT_BYTES` | `128` | Floor below which a dump is treated as failed |
 

@@ -215,3 +215,29 @@ STUB
   [ "$status" -ne 0 ]
   [[ "$output" == *"TLS"* ]]
 }
+
+@test "a disabled FLUSHDB is reported as such, not as a mystery" {
+  # The Bitnami chart renames FLUSHDB and FLUSHALL to "" by default, so
+  # RESTORE_FLUSH fails there with "unknown command" and no hint why.
+  cat >"$STUB_BIN/redis-cli" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  [[ "$a" == "ping" ]] && { echo PONG; exit 0; }
+  [[ "$a" == "flushdb" ]] && { echo "ERR unknown command 'flushdb'" >&2; exit 1; }
+done
+exit 0
+STUB
+  chmod +x "$STUB_BIN/redis-cli"
+  cat >"$STUB_BIN/redis-server" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$STUB_BIN/redis-server"
+  export REDIS_URL=redis://cache:6379 RESTORE_FLUSH=true BACKUP_DIR="$BATS_TEST_TMPDIR"
+  printf 'x' | gzip -c >"$WORK/a.rdb.gz"
+
+  run backend_restore "$WORK/a.rdb.gz"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"disabled"* ]]
+}

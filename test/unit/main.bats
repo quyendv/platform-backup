@@ -404,3 +404,69 @@ fake_backend() {
 
   [ "$status" -eq 0 ]
 }
+
+# --- fetch for offline restore -----------------------------------------------
+# Physical backends (redis, etcd) can be restored by placing the artifact in the
+# server's data directory and restarting — far faster than replaying it into a
+# live server. That path needs the file uncompressed and ready to move.
+
+stage_fetchable() {
+  stub_aws_stdout "                           PRE 20260101_000000/"
+  mkdir -p "$RESTORE_DIR/20260101_000000"
+  printf 'payload-for-offline-restore' | gzip -c >"$RESTORE_DIR/20260101_000000/real.rdb.gz"
+  (cd "$RESTORE_DIR/20260101_000000" && sha256sum real.rdb.gz >real.rdb.gz.sha256)
+}
+
+@test "fetch leaves the artifact compressed by default" {
+  stage_fetchable
+
+  MODE=fetch S3_BUCKET=my-bucket main
+
+  [ -f "$RESTORE_DIR/20260101_000000/real.rdb.gz" ]
+  [ ! -f "$RESTORE_DIR/20260101_000000/real.rdb" ]
+}
+
+@test "FETCH_DECOMPRESS unpacks it ready to place" {
+  stage_fetchable
+
+  MODE=fetch FETCH_DECOMPRESS=true S3_BUCKET=my-bucket main
+
+  [ -f "$RESTORE_DIR/20260101_000000/real.rdb" ]
+  [ "$(cat "$RESTORE_DIR/20260101_000000/real.rdb")" = "payload-for-offline-restore" ]
+}
+
+@test "decompressing says which file to place" {
+  # "real.rdb.gz" also contains "real.rdb", so the assertion has to be on a
+  # message that only the uncompressed path produces.
+  stage_fetchable
+
+  MODE=fetch FETCH_DECOMPRESS=true S3_BUCKET=my-bucket run main
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ready to place"* ]]
+}
+
+@test "the checksum is verified before anything is unpacked" {
+  # Decompressing a corrupt download and handing someone the result to place in
+  # a data directory is the worst outcome here.
+  stage_fetchable
+  printf 'tampered' | gzip -c >"$RESTORE_DIR/20260101_000000/real.rdb.gz"
+
+  MODE=fetch FETCH_DECOMPRESS=true S3_BUCKET=my-bucket run main
+
+  [ "$status" -ne 0 ]
+  [ ! -f "$RESTORE_DIR/20260101_000000/real.rdb" ]
+}
+
+@test "a non-gzip artifact is left alone rather than failing the fetch" {
+  # etcd's snapshot is already a plain .db file.
+  stub_aws_stdout "                           PRE 20260101_000000/"
+  mkdir -p "$RESTORE_DIR/20260101_000000"
+  printf 'plain snapshot' >"$RESTORE_DIR/20260101_000000/snap.db"
+  (cd "$RESTORE_DIR/20260101_000000" && sha256sum snap.db >snap.db.sha256)
+
+  MODE=fetch FETCH_DECOMPRESS=true S3_BUCKET=my-bucket run main
+
+  [ "$status" -eq 0 ]
+  [ -f "$RESTORE_DIR/20260101_000000/snap.db" ]
+}
