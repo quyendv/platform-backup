@@ -9,6 +9,27 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+### Added
+
+- **A Redis backend**, `ghcr.io/quyendv/platform-backup/redis`. RDB snapshots
+  pulled over the network with `redis-cli --rdb`; restore stages the RDB on a
+  throwaway `redis-server` inside the container and `MIGRATE`s the keys across,
+  which preserves data types and TTLs. Tagged per major version (`redis7`,
+  `redis8`, `latest` = `redis8`) because RDB is not backward compatible — Redis
+  8 writes `REDIS0015`, which `redis-server` 7.4 will not load.
+
+  Two things it refuses rather than half-doing:
+
+  - **Redis Cluster.** A cluster shards its keyspace and `--rdb` returns only
+    the node it is aimed at; `-c` does not change that. Three masters holding
+    100 keys measured 33, 30 and 37, so one URL would back up a third of the
+    data and report success. Back up each master separately for now.
+  - **Restoring into a `rediss://` target.** `MIGRATE` runs on the staging
+    server and has no TLS option. Backup over TLS works normally.
+
+  Restore loads the whole dataset into the backup container's memory, so a
+  10 GB Redis needs a 10 GB limit on the pod. Documented with the backend.
+
 ### Changed
 
 - **Kubernetes manifests use a single Secret**, not a Secret plus a ConfigMap.
