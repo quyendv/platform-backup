@@ -9,6 +9,11 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-12
+
+Backups now say when they fail. Everything here is additive: no environment
+variable changed meaning, and 0.1.0 backups restore unchanged.
+
 ### Added
 
 - **A state file.** Every run writes `${BACKUP_DIR}/.last-run.json` with its
@@ -208,5 +213,6 @@ Carried over from the predecessor repositories:
 - **arm64 is only built on release tags**, so it can break between releases.
   `mise run verify:arm` covers it in the meantime.
 
-[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/quyendv/platform-backup/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/quyendv/platform-backup/releases/tag/v0.1.0
