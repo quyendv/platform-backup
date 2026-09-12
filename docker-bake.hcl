@@ -9,7 +9,7 @@ variable "PLATFORMS" { default = "linux/amd64" }
 variable "SUPERCRONIC_VERSION" { default = "0.2.34" }
 
 group "default" {
-  targets = ["postgresql", "mongodb", "etcd", "vault"]
+  targets = ["postgresql", "mongodb", "etcd", "vault", "redis"]
 }
 
 target "_common" {
@@ -32,6 +32,21 @@ target "postgresql" {
     ["${REGISTRY}/postgresql:pg${pg}"],
     TAG == "dev" ? [] : ["${REGISTRY}/postgresql:${TAG}-pg${pg}"],
     pg == "17" ? ["${REGISTRY}/postgresql:latest"] : [],
+  )
+}
+
+# RDB is not backward compatible, so the image's redis-server must be at least
+# the source server's version — the same shape as the postgres matrix.
+target "redis" {
+  name       = "redis-redis${rv}"
+  matrix     = { rv = ["7", "8"] }
+  inherits   = ["_common"]
+  dockerfile = "backends/redis/Dockerfile"
+  args       = { REDIS_VERSION = rv }
+  tags = concat(
+    ["${REGISTRY}/redis:redis${rv}"],
+    TAG == "dev" ? [] : ["${REGISTRY}/redis:${TAG}-redis${rv}"],
+    rv == "8" ? ["${REGISTRY}/redis:latest"] : [],
   )
 }
 

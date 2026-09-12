@@ -71,6 +71,15 @@ services:
       # raft needs a real directory; the image ships none.
       - vault_data:/vault/data
 
+  redis:
+    image: redis:8.10-alpine
+    command: ["redis-server", "--requirepass", "secret", "--save", ""]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a secret --no-auth-warning ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   # Receives webhook notifications so the suite can assert on the payload
   # instead of trusting that curl was called.
   notifysink:

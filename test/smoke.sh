@@ -34,11 +34,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-[[ ${#BACKENDS[@]} -gt 0 ]] || BACKENDS=(postgresql mongodb etcd vault)
+[[ ${#BACKENDS[@]} -gt 0 ]] || BACKENDS=(postgresql mongodb etcd vault redis)
 
 image_for() {
   case "$1" in
     postgresql) printf '%s/postgresql:pg17' "$REGISTRY" ;;
+    redis) printf '%s/redis:redis8' "$REGISTRY" ;;
     *) printf '%s/%s:latest' "$REGISTRY" "$1" ;;
   esac
 }
@@ -51,6 +52,8 @@ tools_for() {
     mongodb) printf '%s; mongodump --version; mongorestore --version' "$common" ;;
     etcd) printf '%s; etcdctl version' "$common" ;;
     vault) printf '%s; vault version' "$common" ;;
+    # redis-server matters as much as redis-cli here: restore stages the RDB on it.
+    redis) printf '%s; redis-cli --version; redis-server --version' "$common" ;;
   esac
 }
 

@@ -2,7 +2,7 @@
 # End-to-end: seed a real target, back it up to a real MinIO, destroy the data,
 # restore it, and assert the data came back.
 #
-# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb vault schedule notify)
+# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb redis vault schedule notify)
 #
 # etcd is not covered here: it needs a real etcd with TLS on the host network,
 # and its restore runs outside the container by design. See backends/etcd/README.md.
@@ -56,6 +56,7 @@ services_for() {
     postgresql | schedule) printf 'postgres' ;;
     notify) printf 'postgres notifysink' ;;
     mongodb) printf 'mongo' ;;
+    redis) printf 'redis' ;;
     vault) printf 'vault' ;;
   esac
 }
@@ -245,6 +246,53 @@ test_notify() {
   pass "notify: an unreachable webhook leaves the backup succeeding"
 }
 
+redis_exec() {
+  "${COMPOSE[@]}" exec -T redis redis-cli -a secret --no-auth-warning "$@"
+}
+
+test_redis() {
+  local image=ghcr.io/quyendv/platform-backup/redis:latest
+  local prefix=it/redis
+  local url="redis://:secret@redis:6379/0"
+  local env=(-e REDIS_URL="$url")
+
+  info "redis: seeding several types and a TTL"
+  redis_exec mset k1 v1 k2 v2 k3 v3 >/dev/null
+  redis_exec rpush mylist a b c >/dev/null
+  redis_exec hset myhash f1 v1 f2 v2 >/dev/null
+  redis_exec setex ttlkey 3600 temp >/dev/null
+  [[ "$(redis_exec dbsize | tr -d '\r')" == "6" ]] || fail "redis: seed did not take"
+
+  info "redis: backup"
+  backup_image "$image" backup "$prefix" "${env[@]}" >/dev/null
+  s3_ls "s3://${BUCKET}/${prefix}/" | grep -qE 'PRE [0-9]{8}_[0-9]{6}/' ||
+    fail "redis: no run folder uploaded"
+  pass "redis: backup uploaded a run folder"
+
+  info "redis: destroying the data"
+  redis_exec flushall >/dev/null
+  [[ "$(redis_exec dbsize | tr -d '\r')" == "0" ]] || fail "redis: flush did not take"
+
+  info "redis: restore"
+  backup_image "$image" restore "$prefix" "${env[@]}" >/dev/null
+
+  local count k2 list hash ttl
+  count="$(redis_exec dbsize | tr -d '\r')"
+  [[ "$count" == "6" ]] || fail "redis: expected 6 keys after restore, got '${count}'"
+  k2="$(redis_exec get k2 | tr -d '\r')"
+  [[ "$k2" == "v2" ]] || fail "redis: expected k2=v2, got '${k2}'"
+  list="$(redis_exec lrange mylist 0 -1 | tr '\n' ' ' | tr -d '\r')"
+  [[ "$list" == "a b c " ]] || fail "redis: list not restored, got '${list}'"
+  hash="$(redis_exec hget myhash f2 | tr -d '\r')"
+  [[ "$hash" == "v2" ]] || fail "redis: hash not restored, got '${hash}'"
+  pass "redis: every data type survived backup -> restore"
+
+  # The whole reason restore stages an RDB rather than replaying SET commands.
+  ttl="$(redis_exec ttl ttlkey | tr -d '\r')"
+  ((ttl > 3000 && ttl <= 3600)) || fail "redis: TTL not preserved, got '${ttl}'"
+  pass "redis: TTLs survived too (${ttl}s remaining)"
+}
+
 vault_exec() {
   "${COMPOSE[@]}" exec -T -e VAULT_ADDR=http://127.0.0.1:8200 \
     ${VAULT_TOKEN:+-e VAULT_TOKEN="$VAULT_TOKEN"} vault "$@"
@@ -301,7 +349,7 @@ test_vault() {
 
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb vault schedule notify)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb redis vault schedule notify)
 
   start_stack "${backends[@]}"
   local b

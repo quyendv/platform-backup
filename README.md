@@ -14,10 +14,11 @@ restore its own data.
 | `ghcr.io/quyendv/platform-backup/mongodb` | `latest` |
 | `ghcr.io/quyendv/platform-backup/etcd` | `latest` |
 | `ghcr.io/quyendv/platform-backup/vault` | `latest` |
+| `ghcr.io/quyendv/platform-backup/redis` | `redis7` `redis8` `latest` (= redis8) |
 
 Each backend documents itself next to its own code:
 [postgresql](backends/postgresql/) · [mongodb](backends/mongodb/) ·
-[etcd](backends/etcd/) · [vault](backends/vault/)
+[etcd](backends/etcd/) · [vault](backends/vault/) · [redis](backends/redis/)
 
 ## Quick start
 
@@ -38,15 +39,19 @@ cron. Leave `SCHEDULE` unset and it runs once and exits.
 
 `MODE` has exactly one meaning per value.
 
-| Mode | What it does | postgresql | mongodb | vault | etcd |
-|---|---|:--:|:--:|:--:|:--:|
-| `backup` *(default)* | dump, upload, prune | ✅ | ✅ | ✅ | ✅ |
-| `fetch` | download and verify a run into `RESTORE_DIR`, touching nothing else | ✅ | ✅ | ✅ | ✅ |
-| `restore` | write a backup into the live target | ✅ | ✅ | ✅ | ❌ |
+| Mode | What it does | postgresql | mongodb | redis | vault | etcd |
+|---|---|:--:|:--:|:--:|:--:|:--:|
+| `backup` *(default)* | dump, upload, prune | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `fetch` | download and verify a run into `RESTORE_DIR`, touching nothing else | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `restore` | write a backup into the live target | ✅ | ✅ | ✅* | ✅ | ❌ |
 
 etcd refuses `restore`: restoring etcd rewrites the data directory of a
 *stopped* member, so it cannot be done from a container against a live cluster.
 The image says so and prints the `etcdctl` command to run on the host.
+
+\* redis restores over plain connections only, and refuses a Redis Cluster
+outright — a cluster shards its keyspace, so one endpoint holds a fraction of
+it. See [backends/redis/](backends/redis/).
 
 `fetch` and `restore` ignore `SCHEDULE` and always run once.
 

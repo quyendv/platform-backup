@@ -20,7 +20,7 @@ on:
         required: true
         default: all
         type: choice
-        options: [all, postgresql, mongodb, etcd, vault]
+        options: [all, postgresql, mongodb, etcd, vault, redis]
       version:
         description: Version to tag the images with
         required: true
@@ -45,7 +45,7 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          all='["postgresql","mongodb","etcd","vault"]'
+          all='["postgresql","mongodb","etcd","vault","redis"]'
 
           if [ "$EVENT" = "workflow_dispatch" ]; then
             version="$INPUT_VERSION"
@@ -61,7 +61,7 @@ jobs:
           else
             name="${REF%%/*}"
             case "$name" in
-              postgresql|mongodb|etcd|vault) ;;
+              postgresql|mongodb|etcd|vault|redis) ;;
               *) echo "::error::Unknown backend '$name' in tag '$REF'"; exit 1 ;;
             esac
             version="${REF##*/v}"
