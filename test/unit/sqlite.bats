@@ -253,3 +253,13 @@ STUB
   kept="$(find "$WORK" -name 'a.db.pre-restore-*' -print -quit)"
   [[ "$(basename "$kept")" =~ ^a\.db\.pre-restore-[0-9]{8}_[0-9]{6}$ ]]
 }
+
+@test "restore into an empty place does not claim to keep a previous database" {
+  db "$WORK/new.db" 'CREATE TABLE t(v);'
+  gzip -c "$WORK/new.db" >"$WORK/art.sqlite.gz"
+
+  SQLITE_PATH="$WORK/a.db" run backend_restore "$WORK/art.sqlite.gz"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"previous one is kept"* ]]
+}

@@ -155,5 +155,9 @@ backend_restore() {
   done
   mv -- "$next" "$path" || die "Could not put the restored database in place"
 
-  log_ok "Restored ${path}; the previous one is kept as ${old}"
+  if [[ -e "$old" ]]; then
+    log_ok "Restored ${path}; the previous one is kept as ${old}"
+  else
+    log_ok "Restored ${path}"
+  fi
 }
