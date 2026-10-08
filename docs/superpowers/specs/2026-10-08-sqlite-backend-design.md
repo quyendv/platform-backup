@@ -60,6 +60,25 @@ running application is undetectable here and fatal there (it keeps writing to th
 old inode). Restore therefore requires the application to be stopped, and says
 so; it does not pretend to check.
 
+**Opening a database read-only can create files the application cannot use.**
+The usual Kubernetes shape: the application (uid 1001) and the backup (uid 999)
+share only a group through `fsGroup`; the volume root is `2775`, the
+application's files `0644`.
+
+```
+app running, -wal/-shm present, mode=ro VACUUM INTO:        ok, nothing created
+app stopped cleanly (no -wal/-shm), mode=ro:                ok, but a.db-wal and a.db-shm
+                                                            are now created, owned by uid 999
+app stopped, mode=ro&immutable=1:                           ok, nothing created
+rollback-journal database, mode=ro:                         ok, nothing created
+```
+
+A WAL database with no `-shm` is one nobody has open (a WAL-mode connection
+creates it on open and removes it on a clean close). Reading it with `mode=ro`
+leaves a `-wal`/`-shm` pair the application, under its own uid, may then be
+unable to write. With `immutable=1` nothing is created, and nothing is lost by
+skipping locks because there is no writer.
+
 Compression, for sizing: 1.5 MB of JSON-like rows gzip to 55 KB; random blobs do
 not compress at all.
 
@@ -72,7 +91,7 @@ not compress at all.
 | `backend_name` | `sqlite` |
 | `backend_caps` | `fetch restore` |
 | `backend_validate` | `SQLITE_PATH` required; the file exists, is readable, and opens as SQLite (`PRAGMA schema_version`) |
-| `backend_dump <dir>` | `sqlite3 "$SQLITE_PATH" ".timeout $SQLITE_BUSY_TIMEOUT_MS" "VACUUM INTO '<dir>/<name>.sqlite'"`, then `gzip`; each command's status is checked; echoes `<name>.sqlite.gz` |
+| `backend_dump <dir>` | Never opens the database for writing. A WAL database (header byte 18 is `2`) with no `-shm` beside it is opened `file:…?mode=ro&immutable=1`; any other `file:…?mode=ro`. Then `VACUUM INTO '<dir>/<name>.sqlite'` with `.timeout $SQLITE_BUSY_TIMEOUT_MS`, then `gzip`; each command's status is checked; echoes `<name>.sqlite.gz` |
 | `backend_verify <path>` | decompress to a temporary file, `PRAGMA integrity_check` must print exactly `ok` |
 | `backend_restore <path>` | see below |
 
@@ -83,7 +102,12 @@ Restore, in order, stopping at the first failure:
 2. Move the current database and its `-wal`, `-shm` and `-journal`, whichever
    exist, to `<name>.pre-restore-<run>[-wal|-shm|-journal]`. Nothing is deleted:
    the previous state stays recoverable until someone removes it.
-3. `mv` the restored file to `SQLITE_PATH`.
+3. Give the restored file the owner and mode of the file it replaces
+   (`chown --reference`, `chmod --reference`), then `mv` it to `SQLITE_PATH`.
+   The application usually runs under another uid than this image; a restored
+   file owned by the backup user would be read-only to it. Changing the owner
+   needs root, so the restore runs as root (the shipped restore Job says so);
+   without root it keeps the mode, warns, and the operator fixes the owner.
 
 The restored file is in rollback-journal mode (`VACUUM INTO` output); an
 application that sets WAL mode on open switches it back.
