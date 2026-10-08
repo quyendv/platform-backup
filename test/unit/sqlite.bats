@@ -263,3 +263,132 @@ STUB
   [ "$status" -eq 0 ]
   [[ "$output" != *"previous one is kept"* ]]
 }
+
+@test "an immutable read during which the database changed is not kept: it is tried again" {
+  closed_wal_db "$WORK/a.db"
+  mkdir -p "$WORK/bin" "$WORK/out"
+  local real
+  real="$(command -v sqlite3)"
+  # The first copy runs while an application checkpoints into the file (its mtime moves).
+  cat >"$WORK/bin/sqlite3" <<STUB
+#!/usr/bin/env bash
+[[ "\$1" == "--version" ]] && exec "$real" "\$@"
+"$real" "\$@" || exit \$?
+if [[ "\$*" == *"VACUUM INTO"* && ! -e "$WORK/changed-once" ]]; then
+  : >"$WORK/changed-once"; touch -d '2001-01-01' "$WORK/a.db"
+fi
+STUB
+  chmod +x "$WORK/bin/sqlite3"
+
+  PATH="$WORK/bin:$PATH" SQLITE_PATH="$WORK/a.db" SQLITE_OPEN_RETRY_SECONDS=0 run --separate-stderr backend_dump "$WORK/out"
+
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"changed during the copy"* ]]
+}
+
+@test "a WAL left behind without its -shm is read with locks, so its commits are not skipped" {
+  closed_wal_db "$WORK/a.db"
+  printf 'x' >"$WORK/a.db-wal"
+  SQLITE_PATH="$WORK/a.db" run _sqlite_source_uri
+  [ "$status" -eq 0 ]
+  [ "$output" = "file:$WORK/a.db?mode=ro" ]
+}
+
+@test "a header that cannot be read fails the backup instead of copying an empty database" {
+  printf 'SQLite format 3\000' >"$WORK/a.db"
+  mkdir -p "$WORK/out"
+  SQLITE_PATH="$WORK/a.db" SQLITE_OPEN_RETRY_SECONDS=0 SQLITE_OPEN_RETRIES=2 run backend_dump "$WORK/out"
+  [ "$status" -ne 0 ]
+  [ ! -e "$WORK/out/sqlite-20260101_000000.sqlite.gz" ]
+}
+
+@test "an error that keeps coming back stops after SQLITE_OPEN_RETRIES attempts" {
+  closed_wal_db "$WORK/a.db"
+  mkdir -p "$WORK/bin" "$WORK/out"
+  cat >"$WORK/bin/sqlite3" <<STUB
+#!/usr/bin/env bash
+[[ "\$1" == "--version" ]] && { echo 3.49.2; exit 0; }
+n=\$(cat "$WORK/calls" 2>/dev/null || echo 0); echo \$((n + 1)) >"$WORK/calls"
+echo "Error: database or disk is full (13)" >&2; exit 1
+STUB
+  chmod +x "$WORK/bin/sqlite3"
+  PATH="$WORK/bin:$PATH" SQLITE_PATH="$WORK/a.db" SQLITE_OPEN_RETRIES=3 SQLITE_OPEN_RETRY_SECONDS=0 run backend_dump "$WORK/out"
+  [ "$status" -ne 0 ]
+  [ "$(cat "$WORK/calls")" = 3 ]
+  [[ "$output" == *"disk is full"* ]]
+}
+
+@test "a locked read during which the database file was written is not kept either" {
+  closed_wal_db "$WORK/a.db"
+  : >"$WORK/a.db-shm"
+  mkdir -p "$WORK/bin" "$WORK/out"
+  local real
+  real="$(command -v sqlite3)"
+  cat >"$WORK/bin/sqlite3" <<STUB
+#!/usr/bin/env bash
+[[ "\$1" == "--version" ]] && exec "$real" "\$@"
+"$real" "\$@" || exit \$?
+if [[ "\$*" == *"VACUUM INTO"* && ! -e "$WORK/changed-once" ]]; then
+  : >"$WORK/changed-once"; touch -d '2001-01-01' "$WORK/a.db"
+fi
+STUB
+  chmod +x "$WORK/bin/sqlite3"
+  PATH="$WORK/bin:$PATH" SQLITE_PATH="$WORK/a.db" SQLITE_OPEN_RETRY_SECONDS=0 run --separate-stderr backend_dump "$WORK/out"
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"changed during the copy"* ]]
+}
+
+@test "retries must be a positive number" {
+  closed_wal_db "$WORK/a.db"
+  SQLITE_PATH="$WORK/a.db" SQLITE_OPEN_RETRIES=abc run backend_validate
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"SQLITE_OPEN_RETRIES"* ]]
+}
+
+@test "restore into an empty place leaves the database writable by the volume's group" {
+  db "$WORK/new.db" 'CREATE TABLE t(v);'
+  gzip -c "$WORK/new.db" >"$WORK/art.sqlite.gz"
+  umask 022
+  SQLITE_PATH="$WORK/a.db" run backend_restore "$WORK/art.sqlite.gz"
+  [ "$status" -eq 0 ]
+  [ "$(stat -c %a "$WORK/a.db")" = 664 ]
+}
+
+@test "restore through a symlink replaces the file it points to, not the link" {
+  db "$WORK/new.db" 'CREATE TABLE t(v);' "INSERT INTO t VALUES ('restored');"
+  gzip -c "$WORK/new.db" >"$WORK/art.sqlite.gz"
+  mkdir -p "$WORK/real"
+  db "$WORK/real/a.db" 'CREATE TABLE t(v);'
+  ln -s "$WORK/real/a.db" "$WORK/link.db"
+  SQLITE_PATH="$WORK/link.db" run backend_restore "$WORK/art.sqlite.gz"
+  [ "$status" -eq 0 ]
+  [ -L "$WORK/link.db" ]
+  [ "$(sqlite3 "$WORK/real/a.db" 'SELECT v FROM t')" = restored ]
+}
+
+@test "a restore whose artifact will not unpack leaves nothing on the volume" {
+  db "$WORK/a.db" 'CREATE TABLE t(v);'
+  printf 'not gzip' >"$WORK/bad.sqlite.gz"
+  SQLITE_PATH="$WORK/a.db" run backend_restore "$WORK/bad.sqlite.gz"
+  [ "$status" -ne 0 ]
+  run find "$WORK" -name 'a.db.restore-*'
+  [ -z "$output" ]
+}
+
+@test "an unlocked read that hits a page being checkpointed is tried again, whatever the error" {
+  closed_wal_db "$WORK/a.db"
+  mkdir -p "$WORK/bin" "$WORK/out"
+  local real
+  real="$(command -v sqlite3)"
+  cat >"$WORK/bin/sqlite3" <<STUB
+#!/usr/bin/env bash
+[[ "\$1" == "--version" ]] && exec "$real" "\$@"
+if [[ "\$*" == *"VACUUM INTO"* && ! -e "$WORK/torn-once" ]]; then
+  : >"$WORK/torn-once"; echo "Error: stepping, database disk image is malformed (11)" >&2; exit 1
+fi
+exec "$real" "\$@"
+STUB
+  chmod +x "$WORK/bin/sqlite3"
+  PATH="$WORK/bin:$PATH" SQLITE_PATH="$WORK/a.db" SQLITE_OPEN_RETRY_SECONDS=0 run --separate-stderr backend_dump "$WORK/out"
+  [ "$status" -eq 0 ]
+}

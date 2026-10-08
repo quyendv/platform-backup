@@ -164,3 +164,40 @@ the application's pod labels, and the same `fsGroup` so file permissions match.
   transactions; restore over a database that has a leftover `-wal`, then the
   restored rows are the ones read back.
 - `test/smoke.sh`: the image's `sqlite3` runs and supports `VACUUM INTO`.
+
+## After review (2026-10-08)
+
+- "No `-shm`" does not mean "nobody writes": an application that opens and
+  closes per request has no `-shm` between requests, and can checkpoint into the
+  file while an `immutable=1` read is under way, mixing old and new pages
+  without `integrity_check` noticing. An unlocked read is therefore kept only
+  when the database's inode, size, mtime and sidecars are the same before and
+  after; otherwise it counts as a failed attempt. A `-wal` with content (left by
+  an application that died) disables `immutable=1`, which would skip its
+  commits.
+- A header that cannot be read fails the attempt: an empty URI makes `sqlite3`
+  open a private empty database, which would have been uploaded as a valid
+  backup.
+- Only open and lock errors are tried again; a restore with no previous file
+  makes the new one `0664`; a symlinked path restores its target.
+
+**Measured after review: only root reads a busy database reliably.** Same
+integration test (a writer that commits without pause, opening per
+transaction), five runs each:
+
+```
+read-only mount, uid 999:                 retries up to 9; 2 runs of 5 got no copy
+writable mount, root, CHOWN/DAC_OVERRIDE/FOWNER, mode=ro:   0 retries in 5 runs
+```
+
+A reader that cannot write the `-shm` (another uid's file, or a read-only
+mount) records no read mark, so the application checkpoints over the pages
+under it ("database disk image is malformed", or a torn copy). As root the
+reader takes part in the locking, and SQLite gives any `-wal`/`-shm` it creates
+to the database's owner (checked: nothing in the directory belongs to another
+uid afterwards). The image therefore runs as root, mounted read-write, with
+every capability dropped but those three. `immutable=1` is used only by a
+non-root run, and every copy, root or not, is kept only if the file's inode,
+size and mtime did not move; any error is tried again.
+
+This supersedes the read-only mount described above in "Running it".

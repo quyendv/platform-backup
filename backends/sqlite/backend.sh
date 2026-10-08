@@ -26,43 +26,74 @@ backend_caps() { printf 'fetch restore'; }
 : "${SQLITE_OPEN_RETRY_SECONDS:=1}"
 
 # _sqlite_source_uri -> the URI the database is read through, never for writing.
+# Fails (status 1, a message on stderr) when the header cannot be read: the
+# caller must not go on with an empty URI, which sqlite3 opens as a private,
+# empty database.
 #
-# A WAL database (header byte 18 is 2) with no -shm is one nobody has open: a
-# WAL connection creates the -shm on open and removes it on a clean close.
-# Reading it with mode=ro would create a -wal/-shm pair owned by this image's
-# user, which the application may then be unable to write. immutable=1 creates
-# nothing, and there is no writer to take locks against.
+# A WAL database (header byte 18 is 2) with no -shm and no WAL content is opened
+# immutable=1: on a writable mount mode=ro would create a -wal/-shm pair owned by
+# this image's user, which the application may then be unable to write. "No
+# -shm" only means no connection is open right now, so _sqlite_read checks that
+# the file did not change while it was read. A WAL left with content (an
+# application that died) is read with mode=ro, which replays it: immutable would
+# skip its commits.
 _sqlite_source_uri() {
   local path="$SQLITE_PATH" mode
-  mode="$(od -An -tu1 -j18 -N1 -- "$path")" || die "Cannot read the header of ${path}"
+  if ! mode="$(od -An -tu1 -j18 -N1 -- "$path" 2>/dev/null)" || [[ -z "${mode// /}" ]]; then
+    printf 'Cannot read the header of %s\n' "$path" >&2
+    return 1
+  fi
   mode="${mode// /}"
-  if [[ "$mode" == "2" && ! -e "${path}-shm" ]]; then
+  # As root, SQLite gives the -wal/-shm it creates to the database's owner, so
+  # a locked read is always possible and immutable is never needed.
+  if [[ "$(id -u)" != 0 && "$mode" == "2" && ! -e "${path}-shm" && ! -s "${path}-wal" ]]; then
     printf 'file:%s?mode=ro&immutable=1' "$path"
   else
     printf 'file:%s?mode=ro' "$path"
   fi
 }
 
+# _sqlite_state -> what changes when anything writes into the database file
+# itself (a checkpoint, a rollback-journal commit): its inode, size and mtime.
+_sqlite_state() { stat -c '%i %s %.9Y' -- "$SQLITE_PATH" 2>/dev/null; }
+
 # _sqlite_read [--clean FILE] SQL...: run statements through the read-only URI,
-# tried again while opening fails. The URI is worked out again each time: the
-# -shm may have come or gone. --clean removes FILE before each attempt, since
-# VACUUM INTO refuses to write over what an interrupted attempt left. Stdout is
-# the statements'; the last error goes to stderr.
+# tried again until a copy is made while nothing wrote the database file.
+#
+# This image cannot take part in the application's locking: on a read-only
+# mount it cannot write the read marks in the -shm, and with no -shm there is
+# nothing shared at all. A checkpoint can then overwrite pages under the copy,
+# which shows as "database disk image is malformed", or not at all. So a copy is
+# kept only when the file's inode, size and mtime did not move while it was
+# read, and any error is tried again, up to SQLITE_OPEN_RETRIES attempts
+# SQLITE_OPEN_RETRY_SECONDS apart (on a read-only mount opening also fails for a
+# moment while the application recreates its -shm). integrity_check on the
+# result is the last word. The URI is worked out again each time. --clean
+# removes FILE before each attempt, since VACUUM INTO refuses to write over what
+# an interrupted one left. Stdout is the statements'; the last error goes to
+# stderr.
 _sqlite_read() {
-  local attempt err="" clean=""
+  local attempt err="" clean="" uri before
   if [[ "${1:-}" == "--clean" ]]; then
     clean="$2"
     shift 2
   fi
   for ((attempt = 1; attempt <= SQLITE_OPEN_RETRIES; attempt++)); do
     [[ -z "$clean" ]] || rm -f -- "$clean"
-    if err="$(sqlite3 "$(_sqlite_source_uri)" ".timeout ${SQLITE_BUSY_TIMEOUT_MS}" "$@" 2>&1 >&3)"; then
-      return 0
+    if ! uri="$(_sqlite_source_uri 2>&1)"; then
+      err="$uri"
+    else
+      before="$(_sqlite_state)"
+      if err="$(sqlite3 "$uri" ".timeout ${SQLITE_BUSY_TIMEOUT_MS}" "$@" 2>&1 >&3)"; then
+        [[ "$(_sqlite_state)" == "$before" ]] && return 0
+        err="${SQLITE_PATH} changed during the copy"
+      fi
     fi
     ((attempt < SQLITE_OPEN_RETRIES)) || break
-    log_warn "sqlite3 failed (attempt ${attempt}/${SQLITE_OPEN_RETRIES}): ${err}"
+    log_warn "attempt ${attempt}/${SQLITE_OPEN_RETRIES}: ${err}"
     sleep "$SQLITE_OPEN_RETRY_SECONDS"
   done 3>&1
+  [[ -z "$clean" ]] || rm -f -- "$clean"
   printf '%s\n' "$err" >&2
   return 1
 }
@@ -81,6 +112,8 @@ backend_validate() {
       ;;
   esac
   require_env SQLITE_PATH
+  require_int SQLITE_OPEN_RETRIES SQLITE_OPEN_RETRY_SECONDS SQLITE_BUSY_TIMEOUT_MS
+  ((SQLITE_OPEN_RETRIES > 0)) || die "SQLITE_OPEN_RETRIES must be 1 or more"
   [[ -e "$SQLITE_PATH" ]] ||
     die "SQLITE_PATH ${SQLITE_PATH} does not exist (is the volume mounted, has the application created it yet?)"
   [[ -r "$SQLITE_PATH" ]] || die "SQLITE_PATH ${SQLITE_PATH} is not readable by uid $(id -u)"
@@ -112,7 +145,10 @@ backend_dump() {
 _sqlite_unpack() {
   local archive="$1" out="$2" result
   gzip -t "$archive" || die "Artifact is not a valid gzip: ${archive}"
-  gunzip -c "$archive" >"$out" || die "Could not decompress ${archive}"
+  gunzip -c "$archive" >"$out" || {
+    rm -f -- "$out"
+    die "Could not decompress ${archive}"
+  }
   result="$(sqlite3 "$out" 'PRAGMA integrity_check' 2>&1)" || true
   if [[ "$result" != "ok" ]]; then
     rm -f -- "$out"
@@ -128,11 +164,13 @@ backend_verify() {
 }
 
 backend_restore() {
-  local archive="$1" path="$SQLITE_PATH"
+  local archive="$1" path
+  # Through a symlink, the file it points to is what gets replaced.
+  path="$(readlink -f -- "$SQLITE_PATH")" || die "Cannot resolve ${SQLITE_PATH}"
   # Named by when the restore ran (UTC, like run ids): a backup run id belongs to
   # MODE=backup only.
   local stamp="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}"
-  local next="${SQLITE_PATH}.restore-${stamp}" old="${SQLITE_PATH}.pre-restore-${stamp}" side
+  local next="${path}.restore-${stamp}" old="${path}.pre-restore-${stamp}" side
 
   log_warn "Restore replaces ${path}: the application must be stopped (an open connection cannot be detected)"
   # Unpacked next to the database, so the final mv is a rename on one filesystem.
@@ -145,6 +183,11 @@ backend_restore() {
     chown --reference="$path" -- "$next" 2>/dev/null ||
       log_warn "Could not give the restored file the owner of ${path} (not root): fix the owner if the application cannot write it"
     mv -- "$path" "$old" || die "Could not move ${path} aside"
+  else
+    # Nothing to copy an owner from: the volume's group may write it (the
+    # application usually reaches its files through that group).
+    chmod 0664 -- "$next" || die "Could not set the mode of ${next}"
+    log_warn "No previous database: ${path} is mode 0664 and owned by uid $(id -u); fix the owner if the application needs it"
   fi
   # A leftover WAL would be replayed over the restored file: it stays with the
   # database it belongs to. Nothing is deleted.

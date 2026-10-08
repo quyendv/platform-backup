@@ -38,10 +38,13 @@ VOLUME ["/backup"]
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=1 \
   CMD ["/opt/platform-backup/healthcheck.sh"]
 
-# Unprivileged, numeric so Kubernetes runAsNonRoot can resolve it. Backup only
-# reads the database; restore needs root to give the restored file its owner
-# (see README.md).
-USER 999:1000
+# Root, unlike the other images: only root can take part in the application's
+# locking (write its read marks in a -shm owned by another uid), and SQLite run as
+# root gives any -wal/-shm it creates to the database's owner. Without that a
+# busy database cannot be copied reliably (measured: see the design). Drop every
+# capability but CHOWN, DAC_OVERRIDE and FOWNER when running it.
+# hadolint ignore=DL3002
+USER 0
 
 ENTRYPOINT ["/opt/platform-backup/entrypoint.sh"]
 CMD []

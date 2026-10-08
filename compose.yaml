@@ -89,9 +89,11 @@ services:
         required: false
     volumes:
       - sqlite_backup:/backup
-      # The database's own volume or directory, read-only for backups (so
-      # nothing owned by this container is left beside the database):
-      # - ./data:/data:ro
+      # The database's own volume or directory, read-write. The image runs as
+      # root; keep only the capabilities it needs (README.md).
+      # - ./data:/data
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
 
 volumes:
   postgresql_backup:

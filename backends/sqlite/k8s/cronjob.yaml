@@ -3,10 +3,10 @@
 #   kubectl apply -f backends/sqlite/k8s/cronjob.yaml
 #   kubectl create job --from=cronjob/sqlite-backup sqlite-backup-now -n <your-namespace>
 #
-# The database is a file, so the pod mounts the application's volume,
-# read-only. With a ReadWriteOnce volume it must run on the same node as the
-# application: the podAffinity below does that. fsGroup gives it the group the application's
-# files carry, so it can read them without running as root.
+# The database is a file, so the pod mounts the application's volume. With a
+# ReadWriteOnce volume it must run on the same node as the application: the
+# podAffinity below does that. It runs as root with three capabilities: only root
+# can take part in the application's locking (see README.md).
 ---
 apiVersion: v1
 kind: Secret
@@ -75,9 +75,6 @@ spec:
       template:
         spec:
           restartPolicy: Never
-          securityContext:
-            # The group the application's volume is owned by.
-            fsGroup: 1000
           affinity:
             # ReadWriteOnce: the volume is attached to one node at a time.
             podAffinity:
@@ -93,13 +90,17 @@ spec:
               envFrom:
                 - secretRef:
                     name: sqlite-backup
+              securityContext:
+                runAsUser: 0
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+                  # Write the application's -shm read marks, and give any
+                  # -wal/-shm SQLite creates to the database's owner.
+                  add: [CHOWN, DAC_OVERRIDE, FOWNER]
               volumeMounts:
-                # Read-only: SQLite then cannot create a -wal/-shm owned by this
-                # pod's user beside the database, which the application could
-                # not write. Restore mounts it read-write.
                 - name: data
                   mountPath: /data
-                  readOnly: true
                 - name: backup
                   mountPath: /backup
           volumes:

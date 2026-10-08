@@ -367,9 +367,9 @@ sqlite_as() {
 test_sqlite() {
   local prefix=it/sqlite rows fetched owner
   local env=(-e SQLITE_PATH=/data/app.db -v "${SQLITE_DATA}:/data")
-  # Backup mounts the volume read-only: SQLite then cannot create a -wal/-shm
-  # owned by the backup user, which the application could not write.
-  local backup_env=(-e SQLITE_PATH=/data/app.db -v "${SQLITE_DATA}:/data:ro")
+  # Root (the image's default) with only the capabilities the README names.
+  local backup_env=(-e SQLITE_PATH=/data/app.db -v "${SQLITE_DATA}:/data"
+    --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER)
 
   info "sqlite: a WAL database owned by the application"
   docker volume create "$SQLITE_DATA" >/dev/null
@@ -408,8 +408,8 @@ test_sqlite() {
   docker wait "${PROJECT}-sqlite-writer" >/dev/null
   docker rm "${PROJECT}-sqlite-writer" >/dev/null
   # The writer opens and closes a connection per transaction, so the -shm comes
-  # and goes: a backup that could write would have left one owned by uid 999.
-  [[ -z "$(docker run --rm -v "${SQLITE_DATA}:/data" --entrypoint find "$SQLITE_IMAGE" /data -user 999)" ]] ||
+  # and goes: whatever the backup created must belong to the application.
+  [[ -z "$(docker run --rm -v "${SQLITE_DATA}:/data" --entrypoint find "$SQLITE_IMAGE" /data ! -user 1001 ! -name lost+found)" ]] ||
     fail "sqlite: the backup left files owned by its own user beside the database"
   pass "sqlite: the backup created nothing beside the database"
 
@@ -425,7 +425,7 @@ test_sqlite() {
     fail "sqlite: setup did not leave a WAL behind"
 
   info "sqlite: restore, as root so the file keeps its owner"
-  backup_image "$SQLITE_IMAGE" restore "$prefix" "${env[@]}" --user 0 >/dev/null
+  backup_image "$SQLITE_IMAGE" restore "$prefix" "${env[@]}" >/dev/null
 
   rows="$(sqlite_as 1001:1000 "$SQLITE_DATA" /data/app.db 'SELECT count(*) FROM t')"
   [[ "$rows" == "$fetched" ]] || fail "sqlite: expected ${fetched} rows after restore, got '${rows}'"

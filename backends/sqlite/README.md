@@ -15,17 +15,25 @@ The choices below were measured; the record is
   database is written and, on a large busy database, only finishes once the
   writer pauses. `VACUUM INTO` copies one consistent snapshot inside a single
   read transaction, while the application keeps writing.
-- **Read-only, always.** The database is opened `mode=ro`, and the volume
-  should be mounted read-only too. Wherever SQLite can write, a read-only
-  connection opened while the `-shm` is absent creates a `-wal`/`-shm` pair
-  owned by this image's user, which the application, under its own uid, may
-  then be unable to write. It happens with no help: an application that opens
-  and closes its database per request removes and recreates the `-shm`
-  constantly. On a read-only mount SQLite creates nothing. A WAL database with
-  no `-shm` (nobody has it open) is opened `immutable=1`.
-- **Opening is tried again.** On a read-only mount, opening fails for a moment
-  whenever that `-shm` is being recreated; `SQLITE_OPEN_RETRIES` attempts,
-  `SQLITE_OPEN_RETRY_SECONDS` apart, ride it out.
+- **As root, with the application's locks.** SQLite readers record what they
+  read in the `-shm`; a reader that cannot write it (another uid's file, or a
+  read-only mount) is invisible to the application, which can then checkpoint
+  over pages under the copy. Measured with a writer that never pauses: read-only
+  mounts needed up to 9 attempts and sometimes never got a copy; as root with a
+  writable mount, 5 runs out of 5 needed none. SQLite run as root gives the
+  `-wal`/`-shm` it creates to the database's owner, so nothing it leaves behind
+  is unusable to the application. The image runs as root; drop every
+  capability but `CHOWN`, `DAC_OVERRIDE` and `FOWNER`.
+- **The database is never opened for writing** (`mode=ro`), and a copy is kept
+  only if the file's inode, size and mtime did not move while it was read.
+- **Not as root** (a platform that forbids it): a WAL database with no `-shm`
+  is read `immutable=1` so no file owned by this image's user is created, the
+  same check guards the copy, and errors are tried again; expect retries, or no
+  copy at all, while the application writes without pause.
+- **Opening is tried again**, `SQLITE_OPEN_RETRIES` attempts
+  `SQLITE_OPEN_RETRY_SECONDS` apart, on any error: a read that meets a
+  checkpoint fails with "database disk image is malformed", which is not a
+  property of the database.
 - In WAL mode the read transaction delays checkpoints while the copy runs; it
   never blocks writers.
 
@@ -42,24 +50,22 @@ Plus the [shared variables](../../README.md#environment).
 
 ## Running it
 
-Mount the database's volume **read-only** for backups (read-write only for a
-restore). Give the container the group that owns the application's files
-(`fsGroup` in Kubernetes, `--group-add` with Docker); it does not need the
-application's uid.
-
-With a ReadWriteOnce volume the container must run on the same node as the
-application. [k8s/cronjob.yaml](k8s/cronjob.yaml) has the `podAffinity` for it,
-with placeholders for the application's label and claim.
+Mount the database's volume read-write and run as root (the image's default)
+with only the capabilities it needs:
 
 ```bash
-docker run --rm --group-add 1000 \
-  -v app-data:/data:ro \
+docker run --rm --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  -v app-data:/data \
   -e SQLITE_PATH=/data/app.db \
   -e AWS_ACCESS_KEY_ID=xxx -e AWS_SECRET_ACCESS_KEY=yyy \
   -e AWS_ENDPOINT_URL_S3=https://minio.example.com \
   -e S3_BUCKET=backups -e S3_PREFIX=backups/sqlite \
   ghcr.io/quyendv/platform-backup/sqlite:latest
 ```
+
+With a ReadWriteOnce volume the container must run on the same node as the
+application. [k8s/cronjob.yaml](k8s/cronjob.yaml) has the `podAffinity` and the
+security context, with placeholders for the application's label and claim.
 
 ## Restore
 
@@ -78,13 +84,16 @@ Restore, stopping at the first failure:
 3. Gives the restored file the owner and mode of the file it replaces, and puts
    it in place.
 
-Changing the owner needs root, so run the restore as root
-([k8s/restore-job.yaml](k8s/restore-job.yaml) does). Without root the mode is
-kept, a warning is logged, and the owner must be fixed by hand if the
+With no previous file to copy from, the restored file is mode `0664` (the
+volume's group can write it) and a warning says to check its owner. A symlinked
+`SQLITE_PATH` restores the file the link points to.
+
+Changing the owner needs root, which is how the image runs. Without root the
+mode is kept, a warning is logged, and the owner must be fixed by hand if the
 application cannot write the file.
 
 ```bash
-docker run --rm --user 0 \
+docker run --rm --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
   -v app-data:/data \
   -e MODE=restore -e SQLITE_PATH=/data/app.db \
   -e AWS_ACCESS_KEY_ID=xxx -e AWS_SECRET_ACCESS_KEY=yyy \

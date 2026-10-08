@@ -24,22 +24,19 @@ spec:
   template:
     spec:
       restartPolicy: Never
-      securityContext:
-        # Root, so the restored file gets the owner of the one it replaces. The
-        # application usually runs under its own uid, and a file owned by the
-        # image's user would be read-only to it.
-        runAsUser: 0
-        fsGroup: 1000
-      affinity:
-        podAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchLabels:
-                  app.kubernetes.io/instance: <your-app>
-              topologyKey: kubernetes.io/hostname
+      # No affinity to the application: it is stopped, so its volume is free to
+      # attach wherever this pod lands.
       containers:
         - name: restore
           image: ghcr.io/quyendv/platform-backup/sqlite:latest
+          # Root (the image's default), so the restored file gets the owner of
+          # the one it replaces: the application usually runs under its own uid.
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER]
           imagePullPolicy: Always
           env:
             - name: MODE
