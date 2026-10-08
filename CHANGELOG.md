@@ -18,7 +18,14 @@ between minor versions. Each change will be listed here with its migration.
   before the run is kept. Restore keeps the previous database and its `-wal`
   aside (a leftover WAL is replayed over a restored file, silently) and gives
   the new file the old one's owner and mode; it requires the application to be
-  stopped. Measurements in `docs/superpowers/specs/2026-10-08-sqlite-backend-design.md`.
+  stopped. Mount the volume read-only for backups: on a writable mount a backup
+  can leave a `-shm` the application cannot write. Measurements in
+  `docs/superpowers/specs/2026-10-08-sqlite-backend-design.md`.
+
+### Fixed
+
+- **The integration suite starts again.** `minio/minio` is no longer pullable
+  from Docker Hub; the fixture uses `bitnamilegacy/minio` at the same release.
 
 ## [0.3.0] — 2026-09-12
 

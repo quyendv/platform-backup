@@ -89,9 +89,9 @@ services:
         required: false
     volumes:
       - sqlite_backup:/backup
-      # The database's own volume or directory, read-write (SQLite writes the
-      # -shm file even to read a WAL database):
-      # - ./data:/data
+      # The database's own volume or directory, read-only for backups (so
+      # nothing owned by this container is left beside the database):
+      # - ./data:/data:ro
 
 volumes:
   postgresql_backup:

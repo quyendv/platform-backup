@@ -15,10 +15,17 @@ The choices below were measured; the record is
   database is written and, on a large busy database, only finishes once the
   writer pauses. `VACUUM INTO` copies one consistent snapshot inside a single
   read transaction, while the application keeps writing.
-- **Read-only, always.** The database is opened `mode=ro`. A WAL database with
-  no `-shm` beside it is one nobody has open, and is opened `immutable=1`:
-  `mode=ro` would create a `-wal`/`-shm` pair owned by this image's user, which
-  the application, under its own uid, may then be unable to write.
+- **Read-only, always.** The database is opened `mode=ro`, and the volume
+  should be mounted read-only too. Wherever SQLite can write, a read-only
+  connection opened while the `-shm` is absent creates a `-wal`/`-shm` pair
+  owned by this image's user, which the application, under its own uid, may
+  then be unable to write. It happens with no help: an application that opens
+  and closes its database per request removes and recreates the `-shm`
+  constantly. On a read-only mount SQLite creates nothing. A WAL database with
+  no `-shm` (nobody has it open) is opened `immutable=1`.
+- **Opening is tried again.** On a read-only mount, opening fails for a moment
+  whenever that `-shm` is being recreated; `SQLITE_OPEN_RETRIES` attempts,
+  `SQLITE_OPEN_RETRY_SECONDS` apart, ride it out.
 - In WAL mode the read transaction delays checkpoints while the copy runs; it
   never blocks writers.
 
@@ -28,15 +35,17 @@ The choices below were measured; the record is
 |---|:--:|---|---|
 | `SQLITE_PATH` | ✅ | — | The database file, as mounted in the container |
 | `SQLITE_BUSY_TIMEOUT_MS` | | `10000` | How long `VACUUM INTO` waits for a lock |
+| `SQLITE_OPEN_RETRIES` | | `10` | Attempts at opening the database |
+| `SQLITE_OPEN_RETRY_SECONDS` | | `1` | Pause between attempts |
 
 Plus the [shared variables](../../README.md#environment).
 
 ## Running it
 
-Mount the database's volume **read-write**: SQLite writes the `-shm` file even
-to read a WAL database. Give the container the group that owns the
-application's files (`fsGroup` in Kubernetes, `--group-add` with Docker); it
-does not need the application's uid.
+Mount the database's volume **read-only** for backups (read-write only for a
+restore). Give the container the group that owns the application's files
+(`fsGroup` in Kubernetes, `--group-add` with Docker); it does not need the
+application's uid.
 
 With a ReadWriteOnce volume the container must run on the same node as the
 application. [k8s/cronjob.yaml](k8s/cronjob.yaml) has the `podAffinity` for it,
@@ -44,7 +53,7 @@ with placeholders for the application's label and claim.
 
 ```bash
 docker run --rm --group-add 1000 \
-  -v app-data:/data \
+  -v app-data:/data:ro \
   -e SQLITE_PATH=/data/app.db \
   -e AWS_ACCESS_KEY_ID=xxx -e AWS_SECRET_ACCESS_KEY=yyy \
   -e AWS_ENDPOINT_URL_S3=https://minio.example.com \

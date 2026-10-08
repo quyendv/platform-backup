@@ -3,9 +3,9 @@
 #   kubectl apply -f backends/sqlite/k8s/cronjob.yaml
 #   kubectl create job --from=cronjob/sqlite-backup sqlite-backup-now -n <your-namespace>
 #
-# The database is a file, so the pod mounts the application's volume. With a
-# ReadWriteOnce volume it must run on the same node as the application: the
-# podAffinity below does that. fsGroup gives it the group the application's
+# The database is a file, so the pod mounts the application's volume,
+# read-only. With a ReadWriteOnce volume it must run on the same node as the
+# application: the podAffinity below does that. fsGroup gives it the group the application's
 # files carry, so it can read them without running as root.
 ---
 apiVersion: v1
@@ -94,8 +94,12 @@ spec:
                 - secretRef:
                     name: sqlite-backup
               volumeMounts:
+                # Read-only: SQLite then cannot create a -wal/-shm owned by this
+                # pod's user beside the database, which the application could
+                # not write. Restore mounts it read-write.
                 - name: data
                   mountPath: /data
+                  readOnly: true
                 - name: backup
                   mountPath: /backup
           volumes:

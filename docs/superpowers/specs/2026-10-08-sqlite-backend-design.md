@@ -79,6 +79,16 @@ leaves a `-wal`/`-shm` pair the application, under its own uid, may then be
 unable to write. With `immutable=1` nothing is created, and nothing is lost by
 skipping locks because there is no writer.
 
+**A read-only connection can still create files, unless the mount is
+read-only.** The integration test's application opens and closes its database
+for every transaction, so its `-shm` comes and goes many times a second. A
+backup on a writable mount, opened in one of those gaps, left an `app.db-shm`
+owned by uid 999, and the application's next write failed with `attempt to
+write a readonly database`. Choosing `immutable=1` by checking for the `-shm`
+first cannot close that window. On a read-only mount SQLite creates nothing; an
+open that lands in the gap fails with `unable to open database file (14)`
+instead, and succeeds when tried again.
+
 Compression, for sizing: 1.5 MB of JSON-like rows gzip to 55 KB; random blobs do
 not compress at all.
 
@@ -125,8 +135,11 @@ matrix: the SQLite file format is backward compatible and `VACUUM INTO` needs
 
 ## Running it
 
-The container needs the database's volume mounted, read-write (SQLite opens the
-`-shm` file for writing even to read a WAL database). With a ReadWriteOnce volume
+The container mounts the database's volume **read-only** for backups (measured
+above: on a writable mount a backup can leave a `-shm` the application cannot
+write), and opening is tried again (`SQLITE_OPEN_RETRIES`,
+`SQLITE_OPEN_RETRY_SECONDS`) through the moments the application recreates its
+`-shm`. Restore mounts it read-write. With a ReadWriteOnce volume
 that means the same node as the application: in Kubernetes, a `podAffinity` on
 the application's pod labels, and the same `fsGroup` so file permissions match.
 `k8s/cronjob.yaml` ships with both, as placeholders.

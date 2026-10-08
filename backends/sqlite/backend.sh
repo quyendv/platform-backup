@@ -19,6 +19,11 @@ backend_name() { printf 'sqlite'; }
 backend_caps() { printf 'fetch restore'; }
 
 : "${SQLITE_BUSY_TIMEOUT_MS:=10000}"
+# Reads are tried again for a while: on a read-only mount, opening fails for a
+# moment whenever an application that opens and closes its database per request
+# removes and recreates the -shm.
+: "${SQLITE_OPEN_RETRIES:=10}"
+: "${SQLITE_OPEN_RETRY_SECONDS:=1}"
 
 # _sqlite_source_uri -> the URI the database is read through, never for writing.
 #
@@ -38,7 +43,43 @@ _sqlite_source_uri() {
   fi
 }
 
+# _sqlite_read [--clean FILE] SQL...: run statements through the read-only URI,
+# tried again while opening fails. The URI is worked out again each time: the
+# -shm may have come or gone. --clean removes FILE before each attempt, since
+# VACUUM INTO refuses to write over what an interrupted attempt left. Stdout is
+# the statements'; the last error goes to stderr.
+_sqlite_read() {
+  local attempt err="" clean=""
+  if [[ "${1:-}" == "--clean" ]]; then
+    clean="$2"
+    shift 2
+  fi
+  for ((attempt = 1; attempt <= SQLITE_OPEN_RETRIES; attempt++)); do
+    [[ -z "$clean" ]] || rm -f -- "$clean"
+    if err="$(sqlite3 "$(_sqlite_source_uri)" ".timeout ${SQLITE_BUSY_TIMEOUT_MS}" "$@" 2>&1 >&3)"; then
+      return 0
+    fi
+    ((attempt < SQLITE_OPEN_RETRIES)) || break
+    log_warn "sqlite3 failed (attempt ${attempt}/${SQLITE_OPEN_RETRIES}): ${err}"
+    sleep "$SQLITE_OPEN_RETRY_SECONDS"
+  done 3>&1
+  printf '%s\n' "$err" >&2
+  return 1
+}
+
 backend_validate() {
+  case "${MODE:-backup}" in
+    # fetch only reads the object store.
+    fetch) return 0 ;;
+    # The database may be damaged or gone: that is what a restore is for. Only
+    # the directory it goes in has to be there.
+    restore)
+      require_env SQLITE_PATH
+      [[ -d "$(dirname -- "$SQLITE_PATH")" ]] ||
+        die "The directory of SQLITE_PATH ${SQLITE_PATH} is missing (is the volume mounted?)"
+      return 0
+      ;;
+  esac
   require_env SQLITE_PATH
   [[ -e "$SQLITE_PATH" ]] ||
     die "SQLITE_PATH ${SQLITE_PATH} does not exist (is the volume mounted, has the application created it yet?)"
@@ -46,7 +87,7 @@ backend_validate() {
   # SQLite opens a short or empty file as an empty database without complaint;
   # the header is what says this is one.
   if [[ "$(head -c 15 -- "$SQLITE_PATH")" != "SQLite format 3" ]] ||
-    ! sqlite3 "$(_sqlite_source_uri)" 'PRAGMA schema_version' >/dev/null 2>&1; then
+    ! _sqlite_read 'PRAGMA schema_version' >/dev/null 2>&1; then
     die "${SQLITE_PATH} does not open as a SQLite database"
   fi
 }
@@ -57,8 +98,7 @@ backend_dump() {
   log_info "sqlite3: $(sqlite3 --version | cut -d' ' -f1)"
   # Checked explicitly: this function ends by echoing the filename, so its own
   # status would otherwise reflect that echo rather than the copy.
-  sqlite3 "$(_sqlite_source_uri)" ".timeout ${SQLITE_BUSY_TIMEOUT_MS}" \
-    "VACUUM INTO '${dir}/dump.sqlite'" >&2 ||
+  _sqlite_read --clean "${dir}/dump.sqlite" "VACUUM INTO '${dir}/dump.sqlite'" >&2 ||
     die "VACUUM INTO failed for ${SQLITE_PATH}"
 
   gzip -c "${dir}/dump.sqlite" >"${dir}/${name}" || die "compressing the database failed"
@@ -89,7 +129,10 @@ backend_verify() {
 
 backend_restore() {
   local archive="$1" path="$SQLITE_PATH"
-  local next="${SQLITE_PATH}.restore-${RUN_ID}" old="${SQLITE_PATH}.pre-restore-${RUN_ID}" side
+  # Named by when the restore ran (UTC, like run ids): a backup run id belongs to
+  # MODE=backup only.
+  local stamp="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}"
+  local next="${SQLITE_PATH}.restore-${stamp}" old="${SQLITE_PATH}.pre-restore-${stamp}" side
 
   log_warn "Restore replaces ${path}: the application must be stopped (an open connection cannot be detected)"
   # Unpacked next to the database, so the final mv is a rename on one filesystem.

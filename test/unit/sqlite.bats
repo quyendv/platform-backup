@@ -156,3 +156,100 @@ closed_wal_db() {
   [ "$status" -eq 0 ]
   [ "$(sqlite3 "$WORK/a.db" 'PRAGMA integrity_check')" = ok ]
 }
+
+@test "fetch needs no database: it only reads the object store" {
+  unset SQLITE_PATH
+  MODE=fetch run backend_validate
+  [ "$status" -eq 0 ]
+}
+
+@test "restore accepts a damaged or missing database: that is what it is for" {
+  printf 'not a database' >"$WORK/a.db"
+  MODE=restore SQLITE_PATH="$WORK/a.db" run backend_validate
+  [ "$status" -eq 0 ]
+  MODE=restore SQLITE_PATH="$WORK/none.db" run backend_validate
+  [ "$status" -eq 0 ]
+}
+
+@test "restore needs the directory the database goes in" {
+  MODE=restore SQLITE_PATH="$WORK/missing/a.db" run backend_validate
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"missing"* ]]
+}
+
+@test "a read that fails while the application reopens its database is tried again" {
+  closed_wal_db "$WORK/a.db"
+  mkdir -p "$WORK/bin" "$WORK/out"
+  local real
+  real="$(command -v sqlite3)"
+  # Fails twice (as on a read-only mount while the -shm is being recreated), then works.
+  cat >"$WORK/bin/sqlite3" <<STUB
+#!/usr/bin/env bash
+n=\$(cat "$WORK/calls" 2>/dev/null || echo 0); echo \$((n + 1)) >"$WORK/calls"
+[[ "\$1" == "--version" ]] && exec "$real" "\$@"
+if ((n < 2)); then echo "Error: unable to open database file (14)" >&2; exit 1; fi
+exec "$real" "\$@"
+STUB
+  chmod +x "$WORK/bin/sqlite3"
+
+  PATH="$WORK/bin:$PATH" SQLITE_PATH="$WORK/a.db" SQLITE_OPEN_RETRY_SECONDS=0 run --separate-stderr backend_dump "$WORK/out"
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "sqlite-20260101_000000.sqlite.gz" ]
+}
+
+@test "a read that keeps failing gives up with the reason" {
+  closed_wal_db "$WORK/a.db"
+  mkdir -p "$WORK/bin" "$WORK/out"
+  cat >"$WORK/bin/sqlite3" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == "--version" ]] && { echo 3.49.2; exit 0; }
+echo "Error: unable to open database file (14)" >&2
+exit 1
+STUB
+  chmod +x "$WORK/bin/sqlite3"
+
+  PATH="$WORK/bin:$PATH" SQLITE_PATH="$WORK/a.db" SQLITE_OPEN_RETRY_SECONDS=0 run backend_dump "$WORK/out"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"VACUUM INTO failed"* ]]
+  [[ "$output" == *"unable to open database file"* ]]
+}
+
+@test "an attempt that left a partial copy does not block the next one" {
+  closed_wal_db "$WORK/a.db"
+  mkdir -p "$WORK/bin" "$WORK/out"
+  local real
+  real="$(command -v sqlite3)"
+  # The first attempt writes half a file and fails, as an interrupted VACUUM INTO can.
+  cat >"$WORK/bin/sqlite3" <<STUB
+#!/usr/bin/env bash
+[[ "\$1" == "--version" ]] && exec "$real" "\$@"
+if [[ "\$*" == *"VACUUM INTO"* && ! -e "$WORK/failed-once" ]]; then
+  : >"$WORK/failed-once"; printf 'partial' >"$WORK/out/dump.sqlite"
+  echo "Error: unable to open database file (14)" >&2; exit 1
+fi
+exec "$real" "\$@"
+STUB
+  chmod +x "$WORK/bin/sqlite3"
+
+  PATH="$WORK/bin:$PATH" SQLITE_PATH="$WORK/a.db" SQLITE_OPEN_RETRY_SECONDS=0 run --separate-stderr backend_dump "$WORK/out"
+
+  [ "$status" -eq 0 ]
+  gunzip -c "$WORK/out/$output" >"$WORK/check.db"
+  [ "$(sqlite3 "$WORK/check.db" 'PRAGMA integrity_check')" = ok ]
+}
+
+@test "restore runs without a run id: the kept file is named by the time of the restore" {
+  db "$WORK/new.db" 'CREATE TABLE t(v);'
+  gzip -c "$WORK/new.db" >"$WORK/art.sqlite.gz"
+  db "$WORK/a.db" 'CREATE TABLE t(v);'
+  unset RUN_ID
+
+  SQLITE_PATH="$WORK/a.db" run backend_restore "$WORK/art.sqlite.gz"
+
+  [ "$status" -eq 0 ]
+  local kept
+  kept="$(find "$WORK" -name 'a.db.pre-restore-*' -print -quit)"
+  [[ "$(basename "$kept")" =~ ^a\.db\.pre-restore-[0-9]{8}_[0-9]{6}$ ]]
+}
