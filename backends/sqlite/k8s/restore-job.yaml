@@ -1,0 +1,63 @@
+# One-shot restore for sqlite. Reuses the CronJob's Secret, so the object store
+# settings cannot drift between backup and restore.
+#
+# STOP THE APPLICATION FIRST. Restore replaces the database file, and an open
+# connection cannot be detected from another process: an application left
+# running keeps writing to the replaced file. If a controller heals replicas
+# (a GitOps tool with self-heal, an operator), suspend it before scaling down.
+#
+#   kubectl scale deploy/<your-app> --replicas=0 -n <your-namespace>
+#   kubectl apply -f backends/sqlite/k8s/restore-job.yaml
+#   kubectl logs -f job/sqlite-restore -n <your-namespace>
+#   kubectl scale deploy/<your-app> --replicas=1 -n <your-namespace>
+#
+# The previous database, with its -wal and -shm, is kept beside it as
+# <file>.pre-restore-<run>; remove it once the application is healthy.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sqlite-restore
+  namespace: <your-namespace>
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      # No affinity to the application: it is stopped, so its volume is free to
+      # attach wherever this pod lands.
+      containers:
+        - name: restore
+          image: ghcr.io/quyendv/platform-backup/sqlite:latest
+          # Root (the image's default), so the restored file gets the owner of
+          # the one it replaces: the application usually runs under its own uid.
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER]
+          imagePullPolicy: Always
+          env:
+            - name: MODE
+              value: "restore"
+            # Empty selects the newest run; set YYYYMMDD_HHMMSS to pin one.
+            - name: RESTORE_TIMESTAMP
+              value: ""
+            # A restore is deliberate and watched; notifying about it is noise.
+            - name: NOTIFY_ON
+              value: "never"
+          envFrom:
+            - secretRef:
+                name: sqlite-backup
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: restore
+              mountPath: /restore
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: <your-app-data>
+        - name: restore
+          emptyDir: {}

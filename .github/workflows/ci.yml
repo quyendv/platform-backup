@@ -58,6 +58,8 @@ jobs:
               - 'backends/vault/**'
             redis:
               - 'backends/redis/**'
+            sqlite:
+              - 'backends/sqlite/**'
       - id: matrix
         env:
           # Read each filter's own boolean output. The combined `changes`
@@ -69,12 +71,13 @@ jobs:
           ETCD: ${{ steps.filter.outputs.etcd }}
           VAULT: ${{ steps.filter.outputs.vault }}
           REDIS: ${{ steps.filter.outputs.redis }}
+          SQLITE: ${{ steps.filter.outputs.sqlite }}
         run: |
           set -euo pipefail
           # A change under lib/ or the bake file reaches every image, so it
           # rebuilds all four; otherwise only the backends that changed.
           selected=()
-          for backend in postgresql mongodb etcd vault redis; do
+          for backend in postgresql mongodb etcd vault redis sqlite; do
             var="${backend^^}"
             if [ "$SHARED" = "true" ] || [ "${!var}" = "true" ]; then
               selected+=("$backend")

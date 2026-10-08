@@ -2,7 +2,7 @@
 # End-to-end: seed a real target, back it up to a real MinIO, destroy the data,
 # restore it, and assert the data came back.
 #
-# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb redis vault schedule notify)
+# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb redis vault sqlite schedule notify)
 #
 # etcd is not covered here: it needs a real etcd with TLS on the host network,
 # and its restore runs outside the container by design. See backends/etcd/README.md.
@@ -24,6 +24,8 @@ fail() {
 cleanup() {
   info "Tearing down"
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  docker rm -f "${PROJECT}-sqlite-writer" >/dev/null 2>&1 || true
+  docker volume rm -f "${PROJECT}_sqlite_data" "${PROJECT}_sqlite_fetch" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -347,9 +349,100 @@ test_vault() {
   pass "vault: data survived backup -> restore"
 }
 
+# The sqlite target is a file on a volume, so the "server" is a volume and the
+# application is a container writing to it as its own uid (1001), sharing only
+# group 1000 with the backup image (999:1000) — the shape a Kubernetes fsGroup
+# gives.
+SQLITE_IMAGE=ghcr.io/quyendv/platform-backup/sqlite:latest
+SQLITE_DATA="${PROJECT}_sqlite_data"
+SQLITE_FETCH="${PROJECT}_sqlite_fetch"
+
+# sqlite_as USER VOLUME SQL...: sqlite3 on the database inside a volume.
+sqlite_as() {
+  local user="$1" vol="$2"
+  shift 2
+  docker run --rm --user "$user" -v "${vol}:/data" --entrypoint sqlite3 "$SQLITE_IMAGE" "$@"
+}
+
+test_sqlite() {
+  local prefix=it/sqlite rows fetched owner
+  local env=(-e SQLITE_PATH=/data/app.db -v "${SQLITE_DATA}:/data")
+  # Root (the image's default) with only the capabilities the README names.
+  local backup_env=(-e SQLITE_PATH=/data/app.db -v "${SQLITE_DATA}:/data"
+    --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER)
+
+  info "sqlite: a WAL database owned by the application"
+  docker volume create "$SQLITE_DATA" >/dev/null
+  docker volume create "$SQLITE_FETCH" >/dev/null
+  docker run --rm --user 0 -v "${SQLITE_DATA}:/data" -v "${SQLITE_FETCH}:/restore" --entrypoint sh "$SQLITE_IMAGE" \
+    -c 'chown 1001:1000 /data && chmod 2775 /data && chown 999:1000 /restore'
+  sqlite_as 1001:1000 "$SQLITE_DATA" /data/app.db \
+    'PRAGMA journal_mode=WAL;' 'CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB);' >/dev/null
+
+  info "sqlite: a writer commits 50 rows at a time for 20 s"
+  docker run -d --name "${PROJECT}-sqlite-writer" --user 1001:1000 -v "${SQLITE_DATA}:/data" \
+    --entrypoint sh "$SQLITE_IMAGE" -c '
+      end=$(( $(date +%s) + 20 ))
+      while [ "$(date +%s)" -lt "$end" ]; do
+        sqlite3 /data/app.db ".timeout 5000" "INSERT INTO t(v) SELECT randomblob(1000) FROM
+          (WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<50) SELECT i FROM n);"
+      done' >/dev/null
+  sleep 3
+
+  info "sqlite: backup while it writes"
+  backup_image "$SQLITE_IMAGE" backup "$prefix" "${backup_env[@]}" >/dev/null
+  s3_ls "s3://${BUCKET}/${prefix}/" | grep -qE 'PRE [0-9]{8}_[0-9]{6}/' ||
+    fail "sqlite: no run folder uploaded"
+  pass "sqlite: backup uploaded a run folder while the application was writing"
+
+  info "sqlite: fetch, and check the copy is one whole snapshot"
+  backup_image "$SQLITE_IMAGE" fetch "$prefix" -e FETCH_DECOMPRESS=true -v "${SQLITE_FETCH}:/restore" >/dev/null
+  fetched="$(docker run --rm -v "${SQLITE_FETCH}:/data" --entrypoint sh "$SQLITE_IMAGE" -c '
+    f=$(find /data -name "*.sqlite" -print -quit)
+    [ "$(sqlite3 "$f" "PRAGMA integrity_check")" = ok ] || exit 1
+    sqlite3 "$f" "SELECT count(*) FROM t"')" || fail "sqlite: the fetched copy fails integrity_check"
+  ((fetched > 0 && fetched % 50 == 0)) ||
+    fail "sqlite: expected a whole number of 50-row transactions, got ${fetched} rows"
+  pass "sqlite: the copy passes integrity_check and holds ${fetched} rows, no torn transaction"
+
+  docker wait "${PROJECT}-sqlite-writer" >/dev/null
+  docker rm "${PROJECT}-sqlite-writer" >/dev/null
+  # The writer opens and closes a connection per transaction, so the -shm comes
+  # and goes: whatever the backup created must belong to the application.
+  [[ -z "$(docker run --rm -v "${SQLITE_DATA}:/data" --entrypoint find "$SQLITE_IMAGE" /data ! -user 1001 ! -name lost+found)" ]] ||
+    fail "sqlite: the backup left files owned by its own user beside the database"
+  pass "sqlite: the backup created nothing beside the database"
+
+  info "sqlite: the application changes the data and dies, leaving its WAL"
+  sqlite_as 1001:1000 "$SQLITE_DATA" /data/app.db "DELETE FROM t;" >/dev/null
+  docker run -d --name "${PROJECT}-sqlite-writer" --user 1001:1000 -v "${SQLITE_DATA}:/data" \
+    --entrypoint sh "$SQLITE_IMAGE" -c \
+    "sqlite3 /data/app.db 'PRAGMA wal_autocheckpoint=0;' \"INSERT INTO t(v) VALUES ('stale');\" '.shell sleep 60'" >/dev/null
+  sleep 2
+  docker kill "${PROJECT}-sqlite-writer" >/dev/null
+  docker rm "${PROJECT}-sqlite-writer" >/dev/null
+  docker run --rm -v "${SQLITE_DATA}:/data" --entrypoint sh "$SQLITE_IMAGE" -c '[ -s /data/app.db-wal ]' ||
+    fail "sqlite: setup did not leave a WAL behind"
+
+  info "sqlite: restore, as root so the file keeps its owner"
+  backup_image "$SQLITE_IMAGE" restore "$prefix" "${env[@]}" >/dev/null
+
+  rows="$(sqlite_as 1001:1000 "$SQLITE_DATA" /data/app.db 'SELECT count(*) FROM t')"
+  [[ "$rows" == "$fetched" ]] || fail "sqlite: expected ${fetched} rows after restore, got '${rows}'"
+  pass "sqlite: the restored rows are the backup's; the leftover WAL did not reach them"
+
+  docker run --rm -v "${SQLITE_DATA}:/data" --entrypoint sh "$SQLITE_IMAGE" -c \
+    'ls /data/app.db.pre-restore-*-wal >/dev/null 2>&1' || fail "sqlite: the old WAL was not kept aside"
+  owner="$(docker run --rm -v "${SQLITE_DATA}:/data" --entrypoint stat "$SQLITE_IMAGE" -c %u /data/app.db)"
+  [[ "$owner" == "1001" ]] || fail "sqlite: restored file owned by ${owner}, not the application"
+  sqlite_as 1001:1000 "$SQLITE_DATA" /data/app.db "INSERT INTO t(v) VALUES ('after');" >/dev/null ||
+    fail "sqlite: the application cannot write the restored database"
+  pass "sqlite: the old database and WAL are kept, and the application owns and writes the new one"
+}
+
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb redis vault schedule notify)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb redis vault sqlite schedule notify)
 
   start_stack "${backends[@]}"
   local b

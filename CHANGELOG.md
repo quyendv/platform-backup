@@ -9,6 +9,30 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-08
+
+A SQLite backend, the first whose data is a file rather than a server. Additive:
+no environment variable changed meaning, and 0.3.0 backups restore unchanged.
+
+### Added
+
+- **A SQLite backend**, `ghcr.io/quyendv/platform-backup/sqlite`. The database
+  is a file on a volume the container mounts. It is copied with `VACUUM INTO`
+  through a read-only URI — `.backup` restarts while the database is written
+  and may never finish on a busy one — and checked with `integrity_check`
+  before the run is kept. Restore keeps the previous database and its `-wal`
+  aside (a leftover WAL is replayed over a restored file, silently) and gives
+  the new file the old one's owner and mode; it requires the application to be
+  stopped. The image runs as root, with only `CHOWN`, `DAC_OVERRIDE` and
+  `FOWNER` needed: only root can take part in the application's locking, and a
+  copy is kept only if the file did not change while it was read. Measurements in
+  `docs/superpowers/specs/2026-10-08-sqlite-backend-design.md`.
+
+### Fixed
+
+- **The integration suite starts again.** `minio/minio` is no longer pullable
+  from Docker Hub; the fixture uses `bitnamilegacy/minio` at the same release.
+
 ## [0.3.0] — 2026-09-12
 
 A Redis backend, and a second way to restore for the backends whose artifact is
