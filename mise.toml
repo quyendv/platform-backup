@@ -9,6 +9,9 @@ actionlint = "1.7.12"
 bats       = "1.14.0"
 pre-commit = "4.6.0"
 gitleaks   = "8.30.1"
+# The sqlite unit tests run real databases. Same release as the image's
+# Alpine package, so a test cannot pass on behaviour the image does not have.
+sqlite     = "3.49.2"
 
 # Only for `mise run test:k8s`, which proves the offline restore procedure the
 # documentation gives actually works on a real cluster.
