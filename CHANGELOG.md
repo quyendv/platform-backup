@@ -9,6 +9,11 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-08
+
+A SQLite backend, the first whose data is a file rather than a server. Additive:
+no environment variable changed meaning, and 0.3.0 backups restore unchanged.
+
 ### Added
 
 - **A SQLite backend**, `ghcr.io/quyendv/platform-backup/sqlite`. The database
