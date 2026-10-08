@@ -9,6 +9,17 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+### Added
+
+- **A SQLite backend**, `ghcr.io/quyendv/platform-backup/sqlite`. The database
+  is a file on a volume the container mounts. It is copied with `VACUUM INTO`
+  through a read-only URI — `.backup` restarts while the database is written
+  and may never finish on a busy one — and checked with `integrity_check`
+  before the run is kept. Restore keeps the previous database and its `-wal`
+  aside (a leftover WAL is replayed over a restored file, silently) and gives
+  the new file the old one's owner and mode; it requires the application to be
+  stopped. Measurements in `docs/superpowers/specs/2026-10-08-sqlite-backend-design.md`.
+
 ## [0.3.0] — 2026-09-12
 
 A Redis backend, and a second way to restore for the backends whose artifact is

@@ -77,8 +77,25 @@ services:
       # Lets VAULT_ADDR=http://host.docker.internal:8200 reach a Vault on the host.
       - "host.docker.internal:host-gateway"
 
+  sqlite:
+    <<: *backup
+    profiles: [sqlite]
+    image: ghcr.io/quyendv/platform-backup/sqlite:latest
+    build:
+      context: .
+      dockerfile: backends/sqlite/Dockerfile
+    env_file:
+      - path: backends/sqlite/.env
+        required: false
+    volumes:
+      - sqlite_backup:/backup
+      # The database's own volume or directory, read-write (SQLite writes the
+      # -shm file even to read a WAL database):
+      # - ./data:/data
+
 volumes:
   postgresql_backup:
   mongodb_backup:
   etcd_backup:
   vault_backup:
+  sqlite_backup:

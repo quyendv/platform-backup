@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Four backup images (PostgreSQL, MongoDB, etcd, Vault) built from one shared bash
+Six backup images (PostgreSQL, MongoDB, etcd, Vault, Redis, SQLite) built from one shared bash
 implementation. There is no application code: `lib/` is the whole program, and
 each `backends/<name>/backend.sh` is a thin adapter.
 
@@ -178,7 +178,7 @@ from `main`.
 
 `ci.yml` runs `mise run check`, then builds only the backends a change touches
 (amd64, no push on PRs). A change under `lib/`, `entrypoint.sh` or
-`docker-bake.hcl` rebuilds all four.
+`docker-bake.hcl` rebuilds all of them.
 
 `release.yml` fires on a per-backend tag (`postgresql/v1.2.0`) and is the only
 place arm64 is *published* — emulated arm64 is slow and the postgres matrix

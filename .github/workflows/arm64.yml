@@ -14,7 +14,7 @@ on:
         required: true
         default: all
         type: choice
-        options: [all, postgresql, mongodb, etcd, vault, redis]
+        options: [all, postgresql, mongodb, etcd, vault, redis, sqlite]
 
 permissions:
   contents: read
