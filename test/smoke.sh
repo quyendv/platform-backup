@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-[[ ${#BACKENDS[@]} -gt 0 ]] || BACKENDS=(postgresql mongodb etcd vault redis)
+[[ ${#BACKENDS[@]} -gt 0 ]] || BACKENDS=(postgresql mongodb etcd vault redis sqlite)
 
 image_for() {
   case "$1" in
@@ -54,6 +54,8 @@ tools_for() {
     vault) printf '%s; vault version' "$common" ;;
     # redis-server matters as much as redis-cli here: restore stages the RDB on it.
     redis) printf '%s; redis-cli --version; redis-server --version' "$common" ;;
+    # VACUUM INTO is what the dump runs; a sqlite3 without it would fail every backup.
+    sqlite) printf "%s; sqlite3 --version; sqlite3 :memory: \"VACUUM INTO '/tmp/smoke.db'\"" "$common" ;;
   esac
 }
 

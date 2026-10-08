@@ -98,3 +98,15 @@ STUB
   [ "$output" = "postgresql-20260101_000000.dump.gz" ]
   [[ "$stderr" == *"pg_dump"* ]]
 }
+
+@test "sqlite fails when VACUUM INTO fails" {
+  source "$REPO_ROOT/backends/sqlite/backend.sh"
+  printf 'SQLite format 3\000' >"$WORK/app.db"
+  export SQLITE_PATH="$WORK/app.db"
+  stub sqlite3 1
+
+  run backend_dump "$WORK"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"VACUUM INTO failed"* ]]
+}

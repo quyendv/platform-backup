@@ -1,10 +1,10 @@
 # platform-backup
 
-Backup images for PostgreSQL, MongoDB, etcd and HashiCorp Vault, shipping
-snapshots to any S3-compatible storage (MinIO, AWS S3, Ceph RGW, Cloudflare R2,
+Backup images for PostgreSQL, MongoDB, etcd, HashiCorp Vault, Redis and SQLite,
+shipping snapshots to any S3-compatible storage (MinIO, AWS S3, Ceph RGW, Cloudflare R2,
 DigitalOcean Spaces, OVH).
 
-Four images, one implementation. Every backend runs the same driver and obeys
+Six images, one implementation. Every backend runs the same driver and obeys
 the same environment contract; a backend adapter only knows how to dump and
 restore its own data.
 
@@ -15,10 +15,12 @@ restore its own data.
 | `ghcr.io/quyendv/platform-backup/etcd` | `latest` |
 | `ghcr.io/quyendv/platform-backup/vault` | `latest` |
 | `ghcr.io/quyendv/platform-backup/redis` | `redis7` `redis8` `latest` (= redis8) |
+| `ghcr.io/quyendv/platform-backup/sqlite` | `latest` |
 
 Each backend documents itself next to its own code:
 [postgresql](backends/postgresql/) · [mongodb](backends/mongodb/) ·
-[etcd](backends/etcd/) · [vault](backends/vault/) · [redis](backends/redis/)
+[etcd](backends/etcd/) · [vault](backends/vault/) · [redis](backends/redis/) ·
+[sqlite](backends/sqlite/)
 
 ## Quick start
 
@@ -39,11 +41,11 @@ cron. Leave `SCHEDULE` unset and it runs once and exits.
 
 `MODE` has exactly one meaning per value.
 
-| Mode | What it does | postgresql | mongodb | redis | vault | etcd |
-|---|---|:--:|:--:|:--:|:--:|:--:|
-| `backup` *(default)* | dump, upload, prune | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `fetch` | download and verify a run into `RESTORE_DIR`, touching nothing else | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `restore` | write a backup into the live target | ✅ | ✅ | ✅* | ✅ | ❌ |
+| Mode | What it does | postgresql | mongodb | redis | vault | etcd | sqlite |
+|---|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `backup` *(default)* | dump, upload, prune | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `fetch` | download and verify a run into `RESTORE_DIR`, touching nothing else | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `restore` | write a backup into the live target | ✅ | ✅ | ✅* | ✅ | ❌ | ✅† |
 
 etcd refuses `restore`: restoring etcd rewrites the data directory of a
 *stopped* member, so it cannot be done from a container against a live cluster.
@@ -52,6 +54,9 @@ The image says so and prints the `etcdctl` command to run on the host.
 \* redis restores over plain connections only, and refuses a Redis Cluster
 outright — a cluster shards its keyspace, so one endpoint holds a fraction of
 it. See [backends/redis/](backends/redis/).
+
+† sqlite replaces the database file, so the application must be stopped first.
+See [backends/sqlite/](backends/sqlite/).
 
 `fetch` and `restore` ignore `SCHEDULE` and always run once.
 
