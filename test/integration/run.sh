@@ -393,8 +393,19 @@ done
 if (_redis_stage flip.rdb.zst /backup/stage 2>/dev/null); then bad "staged a corrupt RDB"; fi
 [ ! -e /backup/stage ] || bad "a failed stage left its directory"
 if pgrep -x redis-server >/dev/null; then bad "a failed stage left its server running"; fi
+
+# The RDB holds every database; restore must take the URL'"'"'s, not db 0.
+redis-server --port 6391 --save "" --daemonize yes >/dev/null
+until redis-cli -p 6391 ping 2>/dev/null | grep -q PONG; do sleep 0.1; done
+redis-cli -p 6391 -n 3 mset a 1 b 2 c 3 >/dev/null
+redis-cli -p 6391 --rdb db3.rdb >/dev/null 2>&1
+zstd -q db3.rdb -o db3.rdb.zst
+redis-cli -p 6391 -n 3 flushdb >/dev/null
+REDIS_URL=redis://127.0.0.1:6391/3 backend_restore db3.rdb.zst >/dev/null 2>&1 || bad "restore into db 3 failed"
+[ "$(redis-cli -p 6391 -n 3 dbsize)" = 3 ] || bad "restore into db 3 restored $(redis-cli -p 6391 -n 3 dbsize) of 3 keys"
+redis-cli -p 6391 shutdown nosave >/dev/null 2>&1 || true
 ' || fail "redis: real-binary verify/staging checks failed on ${image##*:}"
-  pass "redis: verify catches truncation and corruption; .zst and .gz both stage (${image##*:})"
+  pass "redis: verify catches corruption; .zst and .gz stage; restore takes the URL's db (${image##*:})"
 }
 
 vault_exec() {

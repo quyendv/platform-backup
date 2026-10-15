@@ -458,6 +458,30 @@ STUB
   [[ "$output" == *"TLS"* ]]
 }
 
+@test "restore reads the keys from the database it writes to" {
+  # The RDB holds every database. Scanning the staging server's db 0 for a
+  # target of /3 restored nothing from db 3, and reported success.
+  cat >"$STUB_BIN/redis-cli" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$BATS_TEST_TMPDIR/cli.log"
+for a in "\$@"; do
+  [[ "\$a" == "ping" ]] && { echo PONG; exit 0; }
+  [[ "\$a" == "--scan" ]] && { echo k1; exit 0; }
+done
+echo OK
+STUB
+  chmod +x "$STUB_BIN/redis-cli"
+  stub_live_server
+  export REDIS_URL=redis://cache:6379/3 BACKUP_DIR="$BATS_TEST_TMPDIR"
+  printf 'x' | gzip -c >"$WORK/a.rdb.gz"
+
+  run backend_restore "$WORK/a.rdb.gz"
+
+  [ "$status" -eq 0 ]
+  grep -qE -- '-n 3 --scan' "$BATS_TEST_TMPDIR/cli.log"
+  grep -qE -- '-n 3 MIGRATE cache 6379  3 ' "$BATS_TEST_TMPDIR/cli.log"
+}
+
 @test "a disabled FLUSHDB is reported as such, not as a mystery" {
   # The Bitnami chart renames FLUSHDB and FLUSHALL to "" by default, so
   # RESTORE_FLUSH fails there with "unknown command" and no hint why.

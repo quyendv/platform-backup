@@ -261,15 +261,20 @@ HINT
 
   # MIGRATE moves keys in batches, preserving type and TTL. REPLACE overwrites
   # a key that already exists rather than failing the whole batch.
+  #
+  # The RDB holds every database, so both the scan and MIGRATE (which moves
+  # keys out of the connection's selected database) must select the one being
+  # restored. On db 0 they restored nothing for a /3 target, and said so as
+  # success.
   local -a args=("$host" "$port" '' "$db" "$REDIS_MIGRATE_TIMEOUT_MS")
   [[ -n "$password" ]] && args+=(AUTH "$password")
   args+=(REPLACE KEYS)
 
   while read -r -a batch && ((${#batch[@]} > 0)); do
-    _stage_cli MIGRATE "${args[@]}" "${batch[@]}" >&2 ||
+    _stage_cli -n "$db" MIGRATE "${args[@]}" "${batch[@]}" >&2 ||
       _redis_stage_fail "MIGRATE failed after ${migrated} keys"
     migrated=$((migrated + ${#batch[@]}))
-  done < <(_stage_cli --scan | xargs -n "$REDIS_MIGRATE_BATCH" 2>/dev/null || true)
+  done < <(_stage_cli -n "$db" --scan | xargs -n "$REDIS_MIGRATE_BATCH" 2>/dev/null || true)
 
   _redis_stage_stop
   log_ok "Restored ${migrated} keys into ${host}:${port} db ${db}"

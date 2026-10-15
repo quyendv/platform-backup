@@ -39,6 +39,10 @@ load. 0.4.x backups verify, fetch and restore unchanged.
   pass against the previous run's RDB. Staging now runs as a tracked child on a
   socket in its own directory, and every failure path stops it and removes the
   directory.
+- **redis: restore into a database other than 0 restored nothing, and reported
+  success.** The RDB holds every database, but the staging server was scanned
+  and migrated from db 0 whatever `REDIS_URL` named. Both now select the URL's
+  database.
 
 ### Removed
 
