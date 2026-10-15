@@ -162,7 +162,7 @@ _redis_stage() {
   local deadline=$((SECONDS + REDIS_STAGE_TIMEOUT)) report=$((SECONDS + 10)) perc
   until [[ "$(_stage_cli ping 2>/dev/null)" == PONG ]]; do
     kill -0 "$_REDIS_STAGE_PID" 2>/dev/null ||
-      _redis_stage_fail "Staging server exited; the RDB is corrupt, or was written by a newer Redis than this image"
+      _redis_stage_fail "Staging server exited; its log above says why. Usually the RDB is corrupt, or was written by a newer Redis than this image"
     ((SECONDS < deadline)) ||
       _redis_stage_fail "Staging server still loading after ${REDIS_STAGE_TIMEOUT}s; raise REDIS_STAGE_TIMEOUT for a dataset this size"
     if ((SECONDS >= report)); then
