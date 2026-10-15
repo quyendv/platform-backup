@@ -143,6 +143,10 @@ TDD, with bats. Two rules that came from real misses in this repo:
    Anything touching a real binary's surface needs `mise run test:integration`.
 4. **Pin fixture images.** `mongo:8` started refusing to boot on kernel 6.19+
    and broke the suite overnight with no change of ours.
+5. **`! cmd` never fails a bats test**, and a background process holding
+   bats' output pipe makes a test hang instead of fail. Both hid a staging
+   server that outlived its run. Assert with `run cmd; [ "$status" -ne 0 ]`,
+   and have long-lived stubs close their fds (`exec sleep 300 >/dev/null 2>&1 3>&-`).
 
 Timing-dependent assertions are not tests. The SIGPIPE bug reproduces at 3000
 files in a plain shell but not under bats, so it is guarded structurally

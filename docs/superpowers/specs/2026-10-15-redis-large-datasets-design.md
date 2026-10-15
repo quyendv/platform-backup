@@ -115,6 +115,20 @@ is how the staging server is run:
   dying. Explicitly, not from a trap — the same reason `lib/main.sh` gives for
   `_discard_staging`.
 
+### Found while testing
+
+- A loading server only answers between chunks of
+  `loading-process-events-interval-bytes` (2 MB by default). On a small RDB a
+  `ping` blocks for the whole load instead of seeing `LOADING`. A large RDB
+  answers every 2 MB, so the readiness loop sees `LOADING` and can log and time
+  out; the integration fixture lowers the interval to behave the same.
+- The 0.4.0 image, given the same slow load: verify failed at 12 s as "would
+  not start", left `.verify-1` on the volume, and left `redis-server` running
+  on 6399 — P2, P5 and P6 reproduced as described.
+- `--rdb` against a replica works, and a replica whose master link is down
+  refuses with `NOMASTERLINK`. An image older than the server rejects the RDB
+  at verify (the `redis7` image on a Redis 8 RDB).
+
 ## Not doing
 
 - Streaming the dump (above).
