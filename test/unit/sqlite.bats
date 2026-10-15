@@ -338,6 +338,13 @@ STUB
   [[ "$stderr" == *"changed during the copy"* ]]
 }
 
+@test "every timing setting is validated, not just the first" {
+  closed_wal_db "$WORK/a.db"
+  SQLITE_PATH="$WORK/a.db" SQLITE_BUSY_TIMEOUT_MS=5s run backend_validate
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"SQLITE_BUSY_TIMEOUT_MS"* ]]
+}
+
 @test "retries must be a positive number" {
   closed_wal_db "$WORK/a.db"
   SQLITE_PATH="$WORK/a.db" SQLITE_OPEN_RETRIES=abc run backend_validate

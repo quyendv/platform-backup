@@ -67,6 +67,8 @@ _redis() { redis-cli -u "$REDIS_URL" --no-auth-warning "$@"; }
 backend_validate() {
   require_env REDIS_URL
   bool_is_true RESTORE_FLUSH || true
+  require_int REDIS_STAGE_TIMEOUT
+  ((REDIS_STAGE_TIMEOUT > 0)) || die "REDIS_STAGE_TIMEOUT must be at least 1 second"
 
   _redis ping 2>/dev/null | grep -q PONG ||
     die "Cannot reach Redis at $(_redis_url_part host):$(_redis_url_part port)"
@@ -91,7 +93,7 @@ HINT
 }
 
 backend_dump() {
-  local dir="$1" name="redis-${RUN_ID}.rdb.gz"
+  local dir="$1" name="redis-${RUN_ID}.rdb.zst"
 
   log_info "redis-cli: $(redis-cli --version)"
   # Checked explicitly: this function ends by echoing the filename, so its own
@@ -99,55 +101,119 @@ backend_dump() {
   _redis --rdb "${dir}/dump.rdb" >&2 ||
     die "redis-cli --rdb failed against $(_redis_url_part host):$(_redis_url_part port)"
 
-  gzip -c "${dir}/dump.rdb" >"${dir}/${name}" || die "compressing the RDB failed"
+  # No level or thread flag: zstd reads ZSTD_CLEVEL and ZSTD_NBTHREADS from the
+  # environment itself, and a flag would override them. Its defaults, level 3
+  # on one thread, suit a CPU-limited pod; -T0 would count the node's CPUs.
+  zstd -q -c -- "${dir}/dump.rdb" >"${dir}/${name}" || die "compressing the RDB failed"
   rm -f -- "${dir}/dump.rdb"
 
   printf '%s' "$name"
 }
 
-# Staging listens here, not on 6379: a mistake should not reach whatever else
-# happens to be listening on the default port.
-: "${REDIS_STAGE_PORT:=6399}"
+# How long a staging server may spend loading its RDB. A multi-GB dataset takes
+# minutes; a fixed 10 s used to fail every one of them as "corrupt".
+: "${REDIS_STAGE_TIMEOUT:=3600}"
+# Seconds between readiness checks. A seam for the unit tests, which would
+# otherwise spend real time waiting on a stub; not a documented setting.
+: "${_REDIS_STAGE_POLL:=0.25}"
 
-# _redis_stage RDB_GZ DIR
+_REDIS_STAGE_PID=""
+_REDIS_STAGE_DIR=""
+
+# _redis_decompress ARCHIVE — writes the RDB to stdout, codec chosen by extension.
+_redis_decompress() {
+  case "$1" in
+    *.zst) zstd -q -dc -- "$1" ;;
+    # Artifacts from 0.4.x and earlier.
+    *.gz) gzip -dc -- "$1" ;;
+    *)
+      log_error "Unrecognised artifact type: $1"
+      return 1
+      ;;
+  esac
+}
+
+_stage_cli() { redis-cli -s "${_REDIS_STAGE_DIR}/redis.sock" "$@"; }
+
+# _redis_stage ARCHIVE DIR
 # Decompresses the artifact and starts a throwaway server on it. A corrupt or
-# too-new RDB makes redis-server refuse to start, which is the check.
+# too-new RDB makes redis-server exit, which is the check.
+#
+# The server is a tracked child, not daemonised. Holding its PID is what tells
+# "exited" from "still loading", and what lets every failure path stop it: a
+# daemonised server outlived failed runs, and the next run's ping reached it in
+# place of its own. For the same reason it listens on a socket in DIR and on no
+# TCP port at all — nothing else can answer there.
 _redis_stage() {
   local archive="$1" dir="$2"
+  _REDIS_STAGE_DIR="$dir"
   mkdir -p "$dir"
-  gzip -t "$archive" || die "Artifact is not a valid gzip: ${archive}"
-  gunzip -c "$archive" >"${dir}/dump.rdb" || die "Could not decompress ${archive}"
+  _redis_decompress "$archive" >"${dir}/dump.rdb" ||
+    _redis_stage_fail "Could not decompress ${archive}"
 
   # --save '' so the staging server never writes, and appendonly no so it does
   # not try to replay a journal that is not there.
   redis-server --dir "$dir" --dbfilename dump.rdb \
-    --port "$REDIS_STAGE_PORT" --bind 127.0.0.1 \
-    --daemonize yes --save '' --appendonly no >&2 || true
+    --port 0 --bind 127.0.0.1 --unixsocket "${dir}/redis.sock" --unixsocketperm 700 \
+    --save '' --appendonly no >&2 &
+  _REDIS_STAGE_PID=$!
 
-  local waited=0
-  until redis-cli -p "$REDIS_STAGE_PORT" ping 2>/dev/null | grep -q PONG; do
-    waited=$((waited + 1))
-    ((waited < 40)) || break
-    sleep 0.25
+  # A loading server answers LOADING, not PONG, for as long as the load takes.
+  local deadline=$((SECONDS + REDIS_STAGE_TIMEOUT)) report=$((SECONDS + 10)) perc
+  until [[ "$(_stage_cli ping 2>/dev/null)" == PONG ]]; do
+    kill -0 "$_REDIS_STAGE_PID" 2>/dev/null ||
+      _redis_stage_fail "Staging server exited; its log above says why. Usually the RDB is corrupt, or was written by a newer Redis than this image"
+    ((SECONDS < deadline)) ||
+      _redis_stage_fail "Staging server still loading after ${REDIS_STAGE_TIMEOUT}s; raise REDIS_STAGE_TIMEOUT for a dataset this size"
+    if ((SECONDS >= report)); then
+      perc="$(_stage_cli info persistence 2>/dev/null | tr -d '\r' | sed -n 's/^loading_loaded_perc://p')"
+      log_info "Staging server is loading the RDB: ${perc:-?}%"
+      report=$((SECONDS + 10))
+    fi
+    sleep "$_REDIS_STAGE_POLL"
   done
-  ((waited < 40)) && return 0
-  die "Staging server would not start; the RDB is corrupt, or was written by a newer Redis than this image"
 }
 
+# Stops the staging server and removes its directory. Safe to call twice, and
+# when nothing was started. KILL rather than SHUTDOWN: nothing in it is worth
+# a graceful exit, and it may not be answering commands at all.
 _redis_stage_stop() {
-  redis-cli -p "$REDIS_STAGE_PORT" shutdown nosave 2>/dev/null || true
+  if [[ -n "$_REDIS_STAGE_PID" ]]; then
+    kill -KILL "$_REDIS_STAGE_PID" 2>/dev/null || true
+    wait "$_REDIS_STAGE_PID" 2>/dev/null || true
+    _REDIS_STAGE_PID=""
+  fi
+  if [[ -n "$_REDIS_STAGE_DIR" ]]; then
+    rm -rf -- "$_REDIS_STAGE_DIR"
+    _REDIS_STAGE_DIR=""
+  fi
 }
 
-# A size floor cannot tell a small dataset from a truncated file. Loading it is
-# what proves the RDB parses.
-backend_verify() {
-  local dir="${BACKUP_DIR:-/tmp}/.verify-$$"
-  _redis_stage "$1" "$dir"
-  local keys
-  keys="$(redis-cli -p "$REDIS_STAGE_PORT" dbsize)"
+# Every failure after staging begins goes through here, so none of them can
+# leave a server holding the dataset or a directory holding the RDB.
+_redis_stage_fail() {
   _redis_stage_stop
-  rm -rf -- "$dir"
-  log_info "Staged RDB holds ${keys} keys"
+  die "$1"
+}
+
+# A size floor cannot tell a small dataset from a truncated file. Parsing it
+# can: redis-check-rdb reads every key and the trailing CRC64 while holding one
+# key at a time. Loading it into a staging server, as this used to, proved the
+# same and needed memory equal to the dataset on every run.
+#
+# It reads the artifact itself through a pipe, so the bytes checked are the
+# bytes uploaded, codec included, and nothing is written to disk. The pipe is
+# safe: the check needs no seek, and when it rejects a stream early the
+# decompressor dies of SIGPIPE, which pipefail reports.
+backend_verify() {
+  local out keys
+  out="$(_redis_decompress "$1" | redis-check-rdb /dev/stdin 2>&1)" || {
+    tail -n 5 <<<"$out" >&2
+    log_error "The RDB does not parse; it is corrupt, or was written by a newer Redis than this image"
+    return 1
+  }
+  keys="$(sed -n 's/^\[info\] \([0-9]*\) keys read$/\1/p' <<<"$out")"
+  log_info "RDB parses: ${keys:-?} keys"
 }
 
 backend_restore() {
@@ -179,9 +245,8 @@ HINT
 
   if bool_is_true RESTORE_FLUSH; then
     log_warn "RESTORE_FLUSH is set — emptying database ${db} on ${host}:${port}"
-    _redis -n "$db" flushdb >&2 || {
-      _redis_stage_stop
-      die "$(
+    _redis -n "$db" flushdb >&2 ||
+      _redis_stage_fail "$(
         cat <<'HINT'
 FLUSHDB failed. It is very likely disabled on the server rather than broken:
 managed Redis and the Bitnami chart both rename FLUSHDB and FLUSHALL away by
@@ -192,22 +257,25 @@ written with REPLACE, so the restore still overwrites everything the backup
 contains and only leaves keys that are not in it.
 HINT
       )"
-    }
   fi
 
   # MIGRATE moves keys in batches, preserving type and TTL. REPLACE overwrites
   # a key that already exists rather than failing the whole batch.
+  #
+  # The RDB holds every database, so both the scan and MIGRATE (which moves
+  # keys out of the connection's selected database) must select the one being
+  # restored. On db 0 they restored nothing for a /3 target, and said so as
+  # success.
   local -a args=("$host" "$port" '' "$db" "$REDIS_MIGRATE_TIMEOUT_MS")
   [[ -n "$password" ]] && args+=(AUTH "$password")
   args+=(REPLACE KEYS)
 
   while read -r -a batch && ((${#batch[@]} > 0)); do
-    redis-cli -p "$REDIS_STAGE_PORT" MIGRATE "${args[@]}" "${batch[@]}" >&2 ||
-      { _redis_stage_stop && die "MIGRATE failed after ${migrated} keys"; }
+    _stage_cli -n "$db" MIGRATE "${args[@]}" "${batch[@]}" >&2 ||
+      _redis_stage_fail "MIGRATE failed after ${migrated} keys"
     migrated=$((migrated + ${#batch[@]}))
-  done < <(redis-cli -p "$REDIS_STAGE_PORT" --scan | xargs -n "$REDIS_MIGRATE_BATCH" 2>/dev/null || true)
+  done < <(_stage_cli -n "$db" --scan | xargs -n "$REDIS_MIGRATE_BATCH" 2>/dev/null || true)
 
   _redis_stage_stop
-  rm -rf -- "$dir"
   log_ok "Restored ${migrated} keys into ${host}:${port} db ${db}"
 }

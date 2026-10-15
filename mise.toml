@@ -103,4 +103,7 @@ run = "test/smoke.sh --platform linux/arm64"
 
 [tasks."verify:arm"]
 description = "Build arm64 and prove the tooling runs there"
-depends = ["build:arm", "smoke:arm"]
+# In order, not as `depends`: mise runs dependencies in parallel, so the smoke
+# test ran against the host-arch images while the build was still going,
+# failed, and cancelled the build.
+run = ["mise run build:arm", "mise run smoke:arm"]

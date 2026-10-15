@@ -52,8 +52,9 @@ tools_for() {
     mongodb) printf '%s; mongodump --version; mongorestore --version' "$common" ;;
     etcd) printf '%s; etcdctl version' "$common" ;;
     vault) printf '%s; vault version' "$common" ;;
-    # redis-server matters as much as redis-cli here: restore stages the RDB on it.
-    redis) printf '%s; redis-cli --version; redis-server --version' "$common" ;;
+    # redis-server matters as much as redis-cli here: restore stages the RDB on
+    # it. redis-check-rdb and zstd are what every backup verifies and compresses with.
+    redis) printf '%s; redis-cli --version; redis-server --version; redis-check-rdb --version; zstd --version' "$common" ;;
     # VACUUM INTO is what the dump runs; a sqlite3 without it would fail every backup.
     sqlite) printf "%s; sqlite3 --version; sqlite3 :memory: \"VACUUM INTO '/tmp/smoke.db'\"" "$common" ;;
   esac

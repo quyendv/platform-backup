@@ -2,9 +2,10 @@
 
 `ghcr.io/quyendv/platform-backup/redis`
 
-`redis-cli --rdb` pulls an RDB snapshot over the network, gzipped. Restore
-stages that RDB on a throwaway `redis-server` inside the container and
-`MIGRATE`s the keys across, which preserves data types and TTLs.
+`redis-cli --rdb` pulls an RDB snapshot over the network, compressed with
+zstd and checked with `redis-check-rdb` before the run is kept. Restore stages
+that RDB on a throwaway `redis-server` inside the container and `MIGRATE`s the
+keys across, which preserves data types and TTLs.
 
 **Single-instance Redis only.** A Redis Cluster is refused — see below.
 
@@ -15,9 +16,9 @@ Tags follow the **server's** major version: `redis7`, `redis8`, and `latest` =
 
 RDB is not backward compatible. Redis 8 writes `REDIS0015` and `redis-server`
 7.4 refuses to start on it, so an image older than your server cannot verify or
-restore its backups. Backup itself is unaffected — `--rdb` only receives bytes
-— which makes this failure appear at restore time if the tag is wrong. Match
-the tag to the server, or use a newer one.
+restore its backups. With the wrong tag every backup fails verification, which
+is the point: it surfaces then rather than at restore time. Match the tag to
+the server, or use a newer one.
 
 ## Variables
 
@@ -27,8 +28,33 @@ the tag to the server, or use a newer one.
 | `RESTORE_FLUSH` | | `false` | `FLUSHDB` the target before restoring |
 | `REDIS_MIGRATE_BATCH` | | `100` | Keys per `MIGRATE` call |
 | `REDIS_MIGRATE_TIMEOUT_MS` | | `30000` | Per-batch timeout |
+| `REDIS_STAGE_TIMEOUT` | | `3600` | Seconds restore's staging server may spend loading the RDB |
+| `ZSTD_CLEVEL` | | `3` | Compression level — read by zstd itself, not by this image |
+| `ZSTD_NBTHREADS` | | `1` | Compression threads — read by zstd itself |
 
 Plus the [shared variables](../../README.md#environment).
+
+Artifacts are `redis-<run>.rdb.zst`. Runs taken by 0.4.x are `.rdb.gz`; they
+still verify, fetch and restore, and a prefix can hold both.
+
+## Sizing
+
+Backup memory does not grow with the dataset. Verification parses the
+compressed artifact through a pipe with `redis-check-rdb`, which holds one key
+at a time; a few hundred MiB covers any dataset whose largest key fits in it.
+
+Scratch does grow with it: a run holds the RDB and its compressed copy at once.
+Size `/backup` at about **1.5× the server's last RDB** — the RDB, not
+`used_memory`, which is usually two or three times larger.
+
+Each run costs the server one fork, because `--rdb` makes it produce an RDB the
+way a replica's full sync does. The stall is the server's `latest_fork_usec`
+(`INFO persistence`); it grows with the dataset, so choose the schedule with it
+in mind, or point `REDIS_URL` at a replica, which serves `--rdb` the same way.
+A replica whose link to the master is down refuses (`NOMASTERLINK`), so the
+run fails rather than saving stale data.
+
+Restore is different: see below.
 
 ## Restore
 
@@ -50,7 +76,10 @@ Three things to know before relying on it:
 
 - **Restore holds the whole dataset in this container's memory.** The staging
   server loads the entire RDB. Restoring a 10 GB Redis needs a 10 GB limit on
-  the backup pod, or it is OOMKilled part way through.
+  the backup pod, or it is OOMKilled part way through. Loading takes time too:
+  progress is logged every 10 s, and restore gives up after
+  `REDIS_STAGE_TIMEOUT`. For a large instance, prefer the
+  [offline restore](#two-ways-to-restore).
 - **Restore is O(keys).** Millions of keys will take a while; `MIGRATE` moves
   them in batches of `REDIS_MIGRATE_BATCH`.
 - **A `rediss://` target cannot be restored into.** `MIGRATE` runs on the

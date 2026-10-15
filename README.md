@@ -108,7 +108,7 @@ an `~/.aws/config` containing `s3.addressing_style`.
 | `KEEP_LOCAL` | `3` | Runs kept on disk; `0` disables pruning |
 | `KEEP_REMOTE` | `30` | Runs kept in S3; `0` disables pruning |
 | `RESTORE_TIMESTAMP` | *(newest)* | Pin a run, `YYYYMMDD_HHMMSS` |
-| `FETCH_DECOMPRESS` | `false` | `fetch` also unpacks a `.gz` artifact, ready to place |
+| `FETCH_DECOMPRESS` | `false` | `fetch` also unpacks a `.gz` or `.zst` artifact, ready to place |
 | `DRY_RUN` | `false` | Log what would happen, change nothing |
 | `MIN_ARTIFACT_BYTES` | `128` | Floor below which a dump is treated as failed |
 
@@ -221,7 +221,7 @@ Timestamps are UTC. Every artifact carries a SHA-256 sidecar, and `fetch` and
 
 Each backend also verifies its own artifact before the run is promoted —
 `pg_restore --list` for postgresql, `gzip -t` for mongodb and vault,
-`etcdctl snapshot status` for etcd. A size floor cannot do this job: a real
+`etcdctl snapshot status` for etcd, `redis-check-rdb` for redis. A size floor cannot do this job: a real
 dump of an empty database is only a few hundred bytes, so any threshold high
 enough to catch a truncated archive would reject a legitimate backup.
 

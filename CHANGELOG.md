@@ -9,6 +9,60 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-15
+
+Redis on large datasets. The backup path no longer holds a copy of the dataset
+in memory, and restore no longer fails on any RDB that takes more than 10 s to
+load. 0.4.x backups verify, fetch and restore unchanged.
+
+### Changed
+
+- **redis: verify parses instead of loading.** `redis-check-rdb` reads the
+  compressed artifact through a pipe — the exact bytes uploaded — holding one
+  key at a time and writing nothing to disk. It used to load the RDB into a
+  staging `redis-server`, which needed memory equal to the dataset on every run
+  and a second decompressed copy on disk.
+- **redis: artifacts are zstd**, `redis-<run>.rdb.zst`. On a synthetic 174 MB
+  RDB, `zstd -3` took 0.76 s against 5.4 s for `gzip -6`, at the same size.
+  zstd reads `ZSTD_CLEVEL` and `ZSTD_NBTHREADS` itself; the image does not
+  translate them. `.rdb.gz` runs from 0.4.x still verify and restore.
+- **`FETCH_DECOMPRESS` unpacks `.zst`** as well as `.gz`.
+
+### Fixed
+
+- **redis: restore waited 10 s for the staging server, then called the RDB
+  corrupt.** A loading server answers `LOADING`, not `PONG`. Readiness now waits
+  through the load, logs progress every 10 s, and gives up at
+  `REDIS_STAGE_TIMEOUT` (default 3600 s); a server that exits fails at once.
+- **redis: a failed staging left its server running and its directory on the
+  volume.** The directory's name is not a run name, so prune never removed it.
+  In `SCHEDULE` mode the next run's server could not bind the port, the error
+  was hidden, and its ping reached the leftover server — verification could
+  pass against the previous run's RDB. Staging now runs as a tracked child on a
+  socket in its own directory, and every failure path stops it and removes the
+  directory.
+- **redis: restore into a database other than 0 restored nothing, and reported
+  success.** The RDB holds every database, but the staging server was scanned
+  and migrated from db 0 whatever `REDIS_URL` named. Both now select the URL's
+  database.
+- **sqlite: `SQLITE_OPEN_RETRY_SECONDS` and `SQLITE_BUSY_TIMEOUT_MS` were never
+  validated.** `require_int` checked only the first name it was given. It now
+  checks every one, so a non-integer value there fails validation instead of
+  reaching `sleep` and SQLite.
+
+### Removed
+
+- `REDIS_STAGE_PORT`. The staging server listens on a Unix socket and no TCP
+  port, so nothing else can answer in its place.
+
+### Migration
+
+- **If you copied `restore-offline-job.yaml`, update its fetch step.** The old
+  one reads `*.rdb.gz` only and finds nothing in a 0.5 run. The shipped Job
+  reads both.
+- Size the backup volume at about 1.5× the server's last RDB; its memory limit
+  can come down. See the Redis README, "Sizing".
+
 ## [0.4.0] — 2026-10-08
 
 A SQLite backend, the first whose data is a file rather than a server. Additive:
@@ -305,7 +359,9 @@ Carried over from the predecessor repositories:
 - **arm64 is only built on release tags**, so it can break between releases.
   `mise run verify:arm` covers it in the meantime.
 
-[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/quyendv/platform-backup/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/quyendv/platform-backup/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/quyendv/platform-backup/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/quyendv/platform-backup/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/quyendv/platform-backup/releases/tag/v0.1.0
