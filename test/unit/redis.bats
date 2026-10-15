@@ -155,19 +155,34 @@ STUB
   [[ "$output" == *"--rdb"* ]]
 }
 
-@test "dump echoes only the artifact name, and compresses it" {
+@test "dump echoes only the artifact name, and compresses it with zstd" {
   stub_redis_cli 0 'cluster_enabled:0'
   export REDIS_URL=redis://cache:6379
 
   run --separate-stderr backend_dump "$WORK"
 
   [ "$status" -eq 0 ]
-  [ "$output" = "redis-20260101_000000.rdb.gz" ]
-  [ -f "$WORK/redis-20260101_000000.rdb.gz" ]
+  [ "$output" = "redis-20260101_000000.rdb.zst" ]
+  [ -f "$WORK/redis-20260101_000000.rdb.zst" ]
   # The uncompressed intermediate must not be left behind for upload.
   [ ! -f "$WORK/dump.rdb" ]
-  run gzip -t "$WORK/redis-20260101_000000.rdb.gz"
+  run zstd -t "$WORK/redis-20260101_000000.rdb.zst"
   [ "$status" -eq 0 ]
+}
+
+@test "dump fails when the compressor fails" {
+  stub_redis_cli 0 'cluster_enabled:0'
+  cat >"$STUB_BIN/zstd" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$STUB_BIN/zstd"
+  export REDIS_URL=redis://cache:6379
+
+  run backend_dump "$WORK"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"compress"* ]]
 }
 
 # --- hooks and staging -------------------------------------------------------
@@ -187,12 +202,94 @@ STUB
   done
 }
 
-@test "verify rejects something that is not a gzip" {
-  printf 'not gzip' >"$WORK/bad.rdb.gz"
+# --- verify ------------------------------------------------------------------
+# Verify parses the artifact with redis-check-rdb through a pipe. It used to
+# load it into a staging server, which needed memory equal to the dataset on
+# every run.
 
-  run backend_verify "$WORK/bad.rdb.gz"
+# A redis-check-rdb that drains stdin, says how many keys it read, and exits $1.
+stub_check_rdb() {
+  cat >"$STUB_BIN/redis-check-rdb" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >"$BATS_TEST_TMPDIR/check.args"
+cat >"$BATS_TEST_TMPDIR/check.input"
+echo "[offset 0] Checking RDB file /dev/stdin"
+echo "[info] 42 keys read"
+exit ${1:-0}
+STUB
+  chmod +x "$STUB_BIN/redis-check-rdb"
+}
+
+verify_archive() {
+  printf 'REDIS0011stub' | zstd -q -c >"$WORK/a.rdb.zst"
+}
+
+@test "verify passes the decompressed artifact to redis-check-rdb" {
+  stub_check_rdb 0
+  verify_archive
+
+  run backend_verify "$WORK/a.rdb.zst"
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/check.input")" = "REDIS0011stub" ]
+  [[ "$output" == *"42 keys"* ]]
+}
+
+@test "verify fails when redis-check-rdb rejects the RDB" {
+  # backend_verify runs where errexit is off, so the adapter has to check.
+  stub_check_rdb 1
+  verify_archive
+
+  run backend_verify "$WORK/a.rdb.zst"
 
   [ "$status" -ne 0 ]
+}
+
+@test "verify fails when the artifact does not decompress" {
+  # The check accepting whatever arrived must not hide a broken codec stream.
+  stub_check_rdb 0
+  verify_archive
+  head -c 10 "$WORK/a.rdb.zst" >"$WORK/cut.rdb.zst"
+
+  run backend_verify "$WORK/cut.rdb.zst"
+
+  [ "$status" -ne 0 ]
+}
+
+@test "verify reads a 0.4 gzip artifact too" {
+  stub_check_rdb 0
+  printf 'REDIS0011stub' | gzip -c >"$WORK/a.rdb.gz"
+
+  run backend_verify "$WORK/a.rdb.gz"
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/check.input")" = "REDIS0011stub" ]
+}
+
+@test "verify never starts a server" {
+  # A staging load holds the whole dataset in this container's memory.
+  stub_check_rdb 0
+  stub_live_server
+  verify_archive
+
+  run backend_verify "$WORK/a.rdb.zst"
+
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/server.pid" ]
+}
+
+@test "verify writes nothing to disk" {
+  # Decompressing to a file doubled the scratch a run needs.
+  stub_check_rdb 0
+  verify_archive
+  export BACKUP_DIR="$WORK"
+
+  run backend_verify "$WORK/a.rdb.zst"
+
+  [ "$status" -eq 0 ]
+  run find "$WORK" -mindepth 1 -not -name a.rdb.zst
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
 # --- the staging server ------------------------------------------------------
@@ -315,6 +412,19 @@ STUB
   [[ "$args" == *"--port 0"* ]]
   [[ "$args" == *"--unixsocket $WORK/stage/"* ]]
   [[ "$args" != *"--daemonize yes"* ]]
+}
+
+@test "staging reads a zstd artifact" {
+  stub_live_server
+  stub_loading_cli 0
+  printf 'REDIS0011stub' | zstd -q -c >"$WORK/a.rdb.zst"
+
+  _redis_stage "$WORK/a.rdb.zst" "$WORK/stage"
+  local staged
+  staged="$(cat "$WORK/stage/dump.rdb")"
+  _redis_stage_stop
+
+  [ "$staged" = "REDIS0011stub" ]
 }
 
 @test "staging rejects an artifact it cannot decompress, leaving no directory" {

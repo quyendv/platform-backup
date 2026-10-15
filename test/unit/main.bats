@@ -435,6 +435,23 @@ stage_fetchable() {
   [ "$(cat "$RESTORE_DIR/20260101_000000/real.rdb")" = "payload-for-offline-restore" ]
 }
 
+@test "FETCH_DECOMPRESS unpacks a zstd artifact too" {
+  # Redis artifacts are zstd from 0.5 on. A fetch that only knew .gz would
+  # hand the offline restore a compressed file to place as dump.rdb.
+  stub_aws_stdout "                           PRE 20260101_000000/"
+  mkdir -p "$RESTORE_DIR/20260101_000000"
+  printf 'payload-for-offline-restore' | zstd -q -c >"$RESTORE_DIR/20260101_000000/real.rdb.zst"
+  (cd "$RESTORE_DIR/20260101_000000" && sha256sum real.rdb.zst >real.rdb.zst.sha256)
+
+  MODE=fetch FETCH_DECOMPRESS=true S3_BUCKET=my-bucket run main
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$RESTORE_DIR/20260101_000000/real.rdb")" = "payload-for-offline-restore" ]
+  # Kept alongside, like gunzip -k: the checksum still names it.
+  [ -f "$RESTORE_DIR/20260101_000000/real.rdb.zst" ]
+  [[ "$output" == *"ready to place"* ]]
+}
+
 @test "decompressing says which file to place" {
   # "real.rdb.gz" also contains "real.rdb", so the assertion has to be on a
   # message that only the uncompressed path produces.

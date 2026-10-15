@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1
 #
-# Redis backup image, built on the official Redis image — it already ships both
-# redis-cli and the redis-server that restore stages the RDB on.
+# Redis backup image, built on the official Redis image — it already ships
+# redis-cli, the redis-check-rdb that verifies each backup, and the
+# redis-server that restore stages the RDB on.
 #
 # Built once per major version: RDB is not backward compatible (Redis 8 writes
 # REDIS0015, which redis-server 7.4 refuses to load), and both verification and
-# restore load the file. Match the tag to the server, or use a newer one.
+# restore parse the file. Match the tag to the server, or use a newer one.
 ARG REDIS_VERSION=8
 ARG SUPERCRONIC_VERSION=0.2.34
 
@@ -18,7 +19,7 @@ LABEL org.opencontainers.image.title="platform-backup/redis" \
 
 USER 0
 
-RUN apk add --no-cache bash ca-certificates coreutils curl findutils gzip jq util-linux aws-cli
+RUN apk add --no-cache bash ca-certificates coreutils curl findutils gzip jq util-linux aws-cli zstd
 
 RUN set -eux; \
   curl -fsSL -o /usr/local/bin/supercronic \

@@ -178,9 +178,18 @@ do_fetch() {
   #
   # Strictly after verification: handing someone a corrupt file to drop into a
   # data directory is the worst outcome this mode has.
-  if bool_is_true FETCH_DECOMPRESS && [[ "$file" == *.gz ]]; then
-    gunzip -kf -- "$file" || die "Could not decompress ${file}"
-    log_ok "Uncompressed and ready to place: ${file%.gz}"
+  if bool_is_true FETCH_DECOMPRESS; then
+    case "$file" in
+      *.gz)
+        gunzip -kf -- "$file" || die "Could not decompress ${file}"
+        log_ok "Uncompressed and ready to place: ${file%.gz}"
+        ;;
+      # Only the redis image writes zstd, and it is the only one that ships it.
+      *.zst)
+        zstd -q -d -f -- "$file" || die "Could not decompress ${file}"
+        log_ok "Uncompressed and ready to place: ${file%.zst}"
+        ;;
+    esac
   fi
 }
 

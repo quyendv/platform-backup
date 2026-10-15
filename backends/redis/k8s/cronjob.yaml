@@ -20,6 +20,10 @@ stringData:
   # One URL carries host, port, password and database, which is why the whole
   # configuration lives in a Secret.
   REDIS_URL: "redis://:password@redis.<your-namespace>.svc.cluster.local:6379/0"
+  # Read by zstd itself, not by this image. The default — level 3 on one
+  # thread — suits a CPU-limited pod; match threads to the pod's CPU limit.
+  # ZSTD_NBTHREADS: "2"
+  # ZSTD_CLEVEL: "3"
 
   # ── Object storage ─────────────────────────────────────────────────────────
   # Read by the AWS CLI itself. Omit both keys entirely to authenticate with an
@@ -90,5 +94,8 @@ spec:
           volumes:
             # Scratch for this run only. The Job's own status is what reports a
             # failure to the cluster; KEEP_REMOTE is what retains history.
+            # A run holds the RDB and its compressed copy at once: size this
+            # (or the node's ephemeral storage) at ~1.5x the server's last RDB.
+            # Memory does not grow with the dataset.
             - name: backup
               emptyDir: {}

@@ -293,6 +293,108 @@ test_redis() {
   ttl="$(redis_exec ttl ttlkey | tr -d '\r')"
   ((ttl > 3000 && ttl <= 3600)) || fail "redis: TTL not preserved, got '${ttl}'"
   pass "redis: TTLs survived too (${ttl}s remaining)"
+
+  # fetch and the offline restore Job key on the extension.
+  s3_ls --recursive "s3://${BUCKET}/${prefix}/" | grep -qE 'redis-[0-9]{8}_[0-9]{6}\.rdb\.zst$' ||
+    fail "redis: the artifact is not zstd"
+  docker run --rm --network "$NETWORK" -e MODE=fetch -e FETCH_DECOMPRESS=true \
+    -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+    -e AWS_REGION=us-east-1 -e AWS_ENDPOINT_URL_S3=http://minio:9000 \
+    -e S3_BUCKET="$BUCKET" -e S3_PREFIX="$prefix" "${env[@]}" \
+    --entrypoint bash "$image" -c \
+    '/opt/platform-backup/entrypoint.sh >/dev/null 2>&1 && redis-check-rdb /restore/*/redis-*.rdb' \
+    >/dev/null || fail "redis: FETCH_DECOMPRESS did not produce a parseable RDB from a .zst run"
+  pass "redis: the artifact is zstd, and fetch unpacks it ready to place"
+
+  test_redis_slow_load "$image" "$prefix-slow" "${env[@]}"
+  redis_tooling ghcr.io/quyendv/platform-backup/redis:redis8
+  redis_tooling ghcr.io/quyendv/platform-backup/redis:redis7
+}
+
+# A staging server used to get 10 s to answer PONG, and a loading server
+# answers LOADING — so any RDB that took longer to load failed restore as
+# "corrupt". key-load-delay (a hidden server setting) slows the load down
+# without a multi-GB fixture; a wrapper applies it, so the adapter needs no seam.
+test_redis_slow_load() {
+  local image="$1" prefix="$2" keys=15000
+  shift 2
+  local env=("$@") wrapper logs count
+
+  info "redis: a restore whose load takes longer than the old 10 s"
+  redis_exec flushall >/dev/null
+  redis_exec eval "for i=1,${keys} do redis.call('SET','slow:'..i,i) end" 0 >/dev/null
+  backup_image "$image" backup "$prefix" "${env[@]}" >/dev/null
+  redis_exec flushall >/dev/null
+
+  wrapper="$(mktemp)"
+  # A loading server only answers between chunks of
+  # loading-process-events-interval-bytes (2 MB by default). This fixture is far
+  # smaller, so without lowering it a ping would block for the whole load rather
+  # than see LOADING, which is what a large RDB really does.
+  printf '#!/bin/sh\nexec /usr/local/bin/redis-server "$@" --key-load-delay 1000 --loading-process-events-interval-bytes 1024\n' >"$wrapper"
+  chmod 755 "$wrapper"
+  logs="$(backup_image "$image" restore "$prefix" "${env[@]}" \
+    -v "${wrapper}:/opt/slow/redis-server:ro" \
+    -e PATH=/opt/slow:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin 2>&1)" || {
+    rm -f "$wrapper"
+    printf '%s\n' "$logs" | tail -n 5 >&2
+    fail "redis: a slow-loading restore failed"
+  }
+  rm -f "$wrapper"
+
+  # The progress line is first logged at 10 s, so seeing it proves the load
+  # really outlasted the old budget.
+  grep -q 'is loading the RDB' <<<"$logs" || {
+    printf '%s\n' "$logs" | tail -n 8 >&2
+    fail "redis: the load finished inside 10 s, so this proved nothing; raise key-load-delay"
+  }
+  count="$(redis_exec dbsize | tr -d '\r')"
+  [[ "$count" == "$keys" ]] || fail "redis: expected ${keys} keys after a slow restore, got '${count}'"
+  pass "redis: a restore that loads for more than 10 s completes (${count} keys)"
+}
+
+# The adapter's verify and staging against the image's real binaries: stubs
+# prove the call, never that redis-check-rdb or zstd accept it.
+redis_tooling() {
+  local image="$1"
+  info "redis: verify and staging with real binaries (${image##*:})"
+  docker run --rm --entrypoint bash "$image" -c '
+set -euo pipefail
+cd /backup
+source /opt/platform-backup/lib/log.sh
+source /opt/platform-backup/lib/env.sh
+source /opt/platform-backup/backend.sh
+bad() { echo "FAIL: $*" >&2; exit 1; }
+
+redis-server --port 6390 --save "" --appendonly no --daemonize yes >/dev/null
+until redis-cli -p 6390 ping 2>/dev/null | grep -q PONG; do sleep 0.1; done
+redis-cli -p 6390 eval "for i=1,20000 do redis.call(\"SET\",\"k\"..i,string.rep(\"v\",100)..i) end" 0 >/dev/null
+redis-cli -p 6390 --rdb good.rdb >/dev/null 2>&1
+redis-cli -p 6390 shutdown nosave >/dev/null 2>&1 || true
+
+zstd -q good.rdb -o good.rdb.zst
+gzip -c good.rdb >good.rdb.gz
+head -c "$(($(stat -c%s good.rdb.zst) / 2))" good.rdb.zst >cut.rdb.zst
+cp good.rdb flip.rdb
+printf "\x55" | dd of=flip.rdb bs=1 seek="$(($(stat -c%s good.rdb) / 2))" conv=notrunc 2>/dev/null
+zstd -q flip.rdb -o flip.rdb.zst
+
+backend_verify good.rdb.zst 2>/dev/null || bad "verify rejected a good artifact"
+backend_verify good.rdb.gz 2>/dev/null || bad "verify rejected a 0.4 gzip artifact"
+if backend_verify cut.rdb.zst 2>/dev/null; then bad "verify accepted a truncated artifact"; fi
+if backend_verify flip.rdb.zst 2>/dev/null; then bad "verify accepted a corrupt RDB"; fi
+
+for a in good.rdb.zst good.rdb.gz; do
+  _redis_stage "$a" /backup/stage 2>/dev/null
+  n="$(_stage_cli dbsize)"
+  _redis_stage_stop
+  [ "$n" = 20000 ] || bad "staged ${n} keys from ${a}"
+done
+if (_redis_stage flip.rdb.zst /backup/stage 2>/dev/null); then bad "staged a corrupt RDB"; fi
+[ ! -e /backup/stage ] || bad "a failed stage left its directory"
+if pgrep -x redis-server >/dev/null; then bad "a failed stage left its server running"; fi
+' || fail "redis: real-binary verify/staging checks failed on ${image##*:}"
+  pass "redis: verify catches truncation and corruption; .zst and .gz both stage (${image##*:})"
 }
 
 vault_exec() {

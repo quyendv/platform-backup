@@ -93,7 +93,7 @@ HINT
 }
 
 backend_dump() {
-  local dir="$1" name="redis-${RUN_ID}.rdb.gz"
+  local dir="$1" name="redis-${RUN_ID}.rdb.zst"
 
   log_info "redis-cli: $(redis-cli --version)"
   # Checked explicitly: this function ends by echoing the filename, so its own
@@ -101,7 +101,10 @@ backend_dump() {
   _redis --rdb "${dir}/dump.rdb" >&2 ||
     die "redis-cli --rdb failed against $(_redis_url_part host):$(_redis_url_part port)"
 
-  gzip -c "${dir}/dump.rdb" >"${dir}/${name}" || die "compressing the RDB failed"
+  # No level or thread flag: zstd reads ZSTD_CLEVEL and ZSTD_NBTHREADS from the
+  # environment itself, and a flag would override them. Its defaults, level 3
+  # on one thread, suit a CPU-limited pod; -T0 would count the node's CPUs.
+  zstd -q -c -- "${dir}/dump.rdb" >"${dir}/${name}" || die "compressing the RDB failed"
   rm -f -- "${dir}/dump.rdb"
 
   printf '%s' "$name"
@@ -120,6 +123,8 @@ _REDIS_STAGE_DIR=""
 # _redis_decompress ARCHIVE — writes the RDB to stdout, codec chosen by extension.
 _redis_decompress() {
   case "$1" in
+    *.zst) zstd -q -dc -- "$1" ;;
+    # Artifacts from 0.4.x and earlier.
     *.gz) gzip -dc -- "$1" ;;
     *)
       log_error "Unrecognised artifact type: $1"
@@ -149,7 +154,7 @@ _redis_stage() {
   # --save '' so the staging server never writes, and appendonly no so it does
   # not try to replay a journal that is not there.
   redis-server --dir "$dir" --dbfilename dump.rdb \
-    --port 0 --unixsocket "${dir}/redis.sock" --unixsocketperm 700 \
+    --port 0 --bind 127.0.0.1 --unixsocket "${dir}/redis.sock" --unixsocketperm 700 \
     --save '' --appendonly no >&2 &
   _REDIS_STAGE_PID=$!
 
@@ -191,14 +196,24 @@ _redis_stage_fail() {
   die "$1"
 }
 
-# A size floor cannot tell a small dataset from a truncated file. Loading it is
-# what proves the RDB parses.
+# A size floor cannot tell a small dataset from a truncated file. Parsing it
+# can: redis-check-rdb reads every key and the trailing CRC64 while holding one
+# key at a time. Loading it into a staging server, as this used to, proved the
+# same and needed memory equal to the dataset on every run.
+#
+# It reads the artifact itself through a pipe, so the bytes checked are the
+# bytes uploaded, codec included, and nothing is written to disk. The pipe is
+# safe: the check needs no seek, and when it rejects a stream early the
+# decompressor dies of SIGPIPE, which pipefail reports.
 backend_verify() {
-  _redis_stage "$1" "${BACKUP_DIR:-/tmp}/.verify-$$"
-  local keys
-  keys="$(_stage_cli dbsize)"
-  _redis_stage_stop
-  log_info "Staged RDB holds ${keys} keys"
+  local out keys
+  out="$(_redis_decompress "$1" | redis-check-rdb /dev/stdin 2>&1)" || {
+    tail -n 5 <<<"$out" >&2
+    log_error "The RDB does not parse; it is corrupt, or was written by a newer Redis than this image"
+    return 1
+  }
+  keys="$(sed -n 's/^\[info\] \([0-9]*\) keys read$/\1/p' <<<"$out")"
+  log_info "RDB parses: ${keys:-?} keys"
 }
 
 backend_restore() {

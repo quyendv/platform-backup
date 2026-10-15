@@ -3,7 +3,8 @@
 #
 # Set RESTORE_FLUSH=true to empty the target database first. Restore stages the
 # RDB on a redis-server inside this pod, so give it a memory limit at least the
-# size of the dataset or it will be OOMKilled part way through.
+# size of the dataset or it will be OOMKilled part way through. For a large
+# instance the offline restore (restore-offline-job.yaml) is the better route.
 #
 #   kubectl apply -f backends/redis/k8s/restore-job.yaml
 #   kubectl logs -f job/redis-restore -n <your-namespace>
@@ -31,6 +32,10 @@ spec:
             # A restore is deliberate and watched; notifying about it is noise.
             - name: NOTIFY_ON
               value: "never"
+            # How long the staging server may spend loading the RDB. The
+            # default suits datasets of tens of GB; raise it beyond that.
+            # - name: REDIS_STAGE_TIMEOUT
+            #   value: "3600"
           envFrom:
             - secretRef:
                 name: redis-backup

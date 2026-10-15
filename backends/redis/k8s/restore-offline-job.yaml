@@ -45,7 +45,13 @@ spec:
           args:
             - |
               run=$(ls -1 /backup | grep -E '^[0-9]{8}_[0-9]{6}$' | sort | tail -1)
-              gunzip -c /backup/"$run"/*.rdb.gz > /work/dump.rdb
+              # .rdb.zst from 0.5.0 on; runs taken by 0.4.x are .rdb.gz.
+              f=$(find /backup/"$run" -maxdepth 1 -name 'redis-*.rdb.*' ! -name '*.sha256' -print -quit)
+              case "$f" in
+                *.zst) zstd -dc "$f" > /work/dump.rdb ;;
+                *.gz) gunzip -c "$f" > /work/dump.rdb ;;
+                *) echo "no Redis artifact in run $run" >&2; exit 1 ;;
+              esac
               echo "extracted $(stat -c%s /work/dump.rdb) bytes from run $run"
           volumeMounts:
             - {name: store, mountPath: /backup}
