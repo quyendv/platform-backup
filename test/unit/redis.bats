@@ -195,13 +195,145 @@ STUB
   [ "$status" -ne 0 ]
 }
 
-@test "staging does not listen on the default Redis port" {
-  # Staging runs inside the backup container, but a stray 6379 would make a
-  # mistake here talk to whatever else happens to be listening.
-  run grep -oE 'REDIS_STAGE_PORT:=[0-9]+' "$REPO_ROOT/backends/redis/backend.sh"
+# --- the staging server ------------------------------------------------------
+# Restore loads the RDB into a throwaway redis-server. These stubs stand in for
+# it: one that dies at once (a corrupt or too-new RDB), one that stays up.
 
-  [ "$status" -eq 0 ]
-  [[ "$output" != *":=6379" ]]
+# A server that stays up until killed, recording its arguments and its PID.
+stub_live_server() {
+  cat >"$STUB_BIN/redis-server" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >"$BATS_TEST_TMPDIR/server.args"
+printf '%s' "\$\$" >"$BATS_TEST_TMPDIR/server.pid"
+# Let go of bats' output pipes, so a server the adapter fails to stop makes
+# the test fail rather than hang.
+exec sleep 300 >/dev/null 2>&1 3>&-
+STUB
+  chmod +x "$STUB_BIN/redis-server"
+}
+
+# A redis-cli that answers LOADING to the first $1 pings, then PONG.
+# $1 = -1 means it never finishes loading.
+stub_loading_cli() {
+  cat >"$STUB_BIN/redis-cli" <<STUB
+#!/usr/bin/env bash
+counter="$BATS_TEST_TMPDIR/pings"
+for a in "\$@"; do
+  if [[ "\$a" == "ping" ]]; then
+    n=\$((\$(cat "\$counter" 2>/dev/null || echo 0) + 1))
+    printf '%s' "\$n" >"\$counter"
+    if (( ${1} < 0 || n <= ${1} )); then
+      echo "LOADING Redis is loading the dataset in memory"
+      exit 1
+    fi
+    echo PONG
+    exit 0
+  fi
+  [[ "\$a" == "persistence" ]] && { printf 'loading:1\r\nloading_loaded_perc:42.00\r\n'; exit 0; }
+done
+exit 0
+STUB
+  chmod +x "$STUB_BIN/redis-cli"
+}
+
+# Fails while PID is still running. `! kill -0` would not: bats ignores `!`.
+assert_gone() {
+  run kill -0 "$1"
+  [ "$status" -ne 0 ]
+}
+
+stage_archive() {
+  printf 'REDIS0011stub' | gzip -c >"$WORK/a.rdb.gz"
+}
+
+@test "staging fails fast when the server exits, instead of waiting out the timeout" {
+  # A corrupt or too-new RDB makes redis-server exit at once. That must not be
+  # mistaken for a slow load and waited on for an hour.
+  cat >"$STUB_BIN/redis-server" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$STUB_BIN/redis-server"
+  stub_loading_cli -1
+  stage_archive
+  export REDIS_STAGE_TIMEOUT=30
+
+  run _redis_stage "$WORK/a.rdb.gz" "$WORK/stage"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"exited"* ]]
+  [ ! -e "$WORK/stage" ]
+}
+
+@test "staging keeps waiting while the server is still loading" {
+  # Loading answers LOADING, not PONG. The old loop gave up after 40 pings,
+  # so any dataset that took more than 10 s to load failed as "corrupt".
+  stub_live_server
+  stub_loading_cli 60
+  stage_archive
+  export REDIS_STAGE_TIMEOUT=30 _REDIS_STAGE_POLL=0
+
+  _redis_stage "$WORK/a.rdb.gz" "$WORK/stage"
+  local rc=$? pid
+  pid="$(cat "$BATS_TEST_TMPDIR/server.pid")"
+  _redis_stage_stop
+
+  [ "$rc" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/pings")" -eq 61 ]
+  assert_gone "$pid"
+  [ ! -e "$WORK/stage" ]
+}
+
+@test "staging gives up at REDIS_STAGE_TIMEOUT and leaves nothing running" {
+  # A server left behind holds the dataset in memory and, in SCHEDULE mode,
+  # answers the next run's checks in place of the server that run started.
+  stub_live_server
+  stub_loading_cli -1
+  stage_archive
+  export REDIS_STAGE_TIMEOUT=1
+
+  run _redis_stage "$WORK/a.rdb.gz" "$WORK/stage"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"REDIS_STAGE_TIMEOUT"* ]]
+  assert_gone "$(cat "$BATS_TEST_TMPDIR/server.pid")"
+  [ ! -e "$WORK/stage" ]
+}
+
+@test "staging listens on a socket in its own directory, never on a TCP port" {
+  # A TCP port can be held by something else — including a staging server
+  # left over from an earlier run — which then answers in its place.
+  stub_live_server
+  stub_loading_cli 0
+  stage_archive
+
+  _redis_stage "$WORK/a.rdb.gz" "$WORK/stage"
+  _redis_stage_stop
+
+  local args
+  args="$(cat "$BATS_TEST_TMPDIR/server.args")"
+  [[ "$args" == *"--port 0"* ]]
+  [[ "$args" == *"--unixsocket $WORK/stage/"* ]]
+  [[ "$args" != *"--daemonize yes"* ]]
+}
+
+@test "staging rejects an artifact it cannot decompress, leaving no directory" {
+  printf 'not gzip' >"$WORK/bad.rdb.gz"
+
+  run _redis_stage "$WORK/bad.rdb.gz" "$WORK/stage"
+
+  [ "$status" -ne 0 ]
+  [ ! -e "$WORK/stage" ]
+}
+
+@test "REDIS_STAGE_TIMEOUT must be a positive integer" {
+  export REDIS_URL=redis://cache:6379 REDIS_STAGE_TIMEOUT=10m
+  stub_redis_cli 0 'cluster_enabled:0'
+
+  run backend_validate
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"REDIS_STAGE_TIMEOUT"* ]]
 }
 
 @test "restore refuses a TLS target it cannot reach with MIGRATE" {
@@ -228,11 +360,7 @@ done
 exit 0
 STUB
   chmod +x "$STUB_BIN/redis-cli"
-  cat >"$STUB_BIN/redis-server" <<'STUB'
-#!/usr/bin/env bash
-exit 0
-STUB
-  chmod +x "$STUB_BIN/redis-server"
+  stub_live_server
   export REDIS_URL=redis://cache:6379 RESTORE_FLUSH=true BACKUP_DIR="$BATS_TEST_TMPDIR"
   printf 'x' | gzip -c >"$WORK/a.rdb.gz"
 
@@ -240,4 +368,9 @@ STUB
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"disabled"* ]]
+  # A failed restore stops its staging server and removes its directory.
+  assert_gone "$(cat "$BATS_TEST_TMPDIR/server.pid")"
+  run find "$BATS_TEST_TMPDIR" -maxdepth 1 -name '.restore-*'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
