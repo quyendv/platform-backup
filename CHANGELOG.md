@@ -9,6 +9,8 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-15
+
 Redis on large datasets. The backup path no longer holds a copy of the dataset
 in memory, and restore no longer fails on any RDB that takes more than 10 s to
 load. 0.4.x backups verify, fetch and restore unchanged.
@@ -43,6 +45,10 @@ load. 0.4.x backups verify, fetch and restore unchanged.
   success.** The RDB holds every database, but the staging server was scanned
   and migrated from db 0 whatever `REDIS_URL` named. Both now select the URL's
   database.
+- **sqlite: `SQLITE_OPEN_RETRY_SECONDS` and `SQLITE_BUSY_TIMEOUT_MS` were never
+  validated.** `require_int` checked only the first name it was given. It now
+  checks every one, so a non-integer value there fails validation instead of
+  reaching `sleep` and SQLite.
 
 ### Removed
 
@@ -353,7 +359,9 @@ Carried over from the predecessor repositories:
 - **arm64 is only built on release tags**, so it can break between releases.
   `mise run verify:arm` covers it in the meantime.
 
-[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/quyendv/platform-backup/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/quyendv/platform-backup/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/quyendv/platform-backup/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/quyendv/platform-backup/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/quyendv/platform-backup/releases/tag/v0.1.0
