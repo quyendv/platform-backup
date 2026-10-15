@@ -88,9 +88,12 @@ docker run --privileged --rm tonistiigi/binfmt --install arm64
 docker buildx inspect pb-arm >/dev/null 2>&1 ||   docker buildx create --name pb-arm --driver docker-container --bootstrap
 """
 
+# arm64 images load under their own name, never over the host-arch tags.
+# --load replaces a tag, so testing arm64 used to leave every local image arm64
+# until the next `mise run build`, and the integration suite ran on emulation.
 [tasks."build:arm"]
-description = "Build all images for linux/arm64 (run arm:setup first)"
-env = { PLATFORMS = "linux/arm64" }
+description = "Build all images for linux/arm64 as platform-backup-arm64/* (run arm:setup first)"
+env = { PLATFORMS = "linux/arm64", REGISTRY = "platform-backup-arm64" }
 run = "docker buildx bake --builder pb-arm --load"
 
 [tasks.smoke]
@@ -99,11 +102,20 @@ run = "test/smoke.sh"
 
 [tasks."smoke:arm"]
 description = "Same, against the arm64 images"
+env = { REGISTRY = "platform-backup-arm64" }
 run = "test/smoke.sh --platform linux/arm64"
 
+[tasks."clean:arm"]
+description = "Remove the arm64 images build:arm loaded"
+# By tag, not by ID: an ID can be shared with an image someone else tagged.
+# The pb-arm builder keeps its layer cache, so the next build:arm stays fast.
+# raw: mise renders run scripts as Tera templates, which claims docker's {{ }}.
+run = "{% raw %}docker image ls --filter 'reference=platform-backup-arm64/*' --format '{{.Repository}}:{{.Tag}}' | xargs -r docker rmi >/dev/null{% endraw %}"
+
 [tasks."verify:arm"]
-description = "Build arm64 and prove the tooling runs there"
+description = "Build arm64, prove the tooling runs there, then remove the images"
 # In order, not as `depends`: mise runs dependencies in parallel, so the smoke
 # test ran against the host-arch images while the build was still going,
-# failed, and cancelled the build.
-run = ["mise run build:arm", "mise run smoke:arm"]
+# failed, and cancelled the build. A failed smoke stops before clean:arm, which
+# leaves the images there to debug.
+run = ["mise run build:arm", "mise run smoke:arm", "mise run clean:arm"]

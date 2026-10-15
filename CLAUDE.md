@@ -192,7 +192,9 @@ Because nothing builds arm64 per-commit, it can rot silently. `mise run
 verify:arm` (or the manual `arm64` workflow) builds it and runs the tooling
 under emulation; do that before tagging, or after touching a Dockerfile.
 Building alone proves nothing — layers assemble for any architecture, so
-`test/smoke.sh` executes the actual binaries.
+`test/smoke.sh` executes the actual binaries. Locally the arm64 images load as
+`platform-backup-arm64/*`, never over the host-arch tags, and `verify:arm`
+removes them once the smoke test passes (`mise run clean:arm` by hand).
 
 ## History
 
