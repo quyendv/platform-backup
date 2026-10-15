@@ -15,11 +15,16 @@ require_env() {
   ((${#missing[@]} == 0)) || die "Missing required environment variable(s): ${missing[*]}"
 }
 
-# require_int NAME — the named variable must be a non-negative integer.
+# require_int NAME... — each named variable must be a non-negative integer.
+# Every name, like require_env: reading only $1 once let two of the three the
+# sqlite adapter passes through unchecked.
 require_int() {
-  local name="$1" value="${!1:-}"
-  [[ "$value" =~ ^[0-9]+$ ]] ||
-    die "$name must be a non-negative integer (got '${value}')"
+  local name value
+  for name in "$@"; do
+    value="${!name:-}"
+    [[ "$value" =~ ^[0-9]+$ ]] ||
+      die "$name must be a non-negative integer (got '${value}')"
+  done
 }
 
 # parse_bool VALUE

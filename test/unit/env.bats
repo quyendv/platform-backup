@@ -58,6 +58,20 @@ setup() {
   [ "$status" -eq 1 ]
 }
 
+@test "require_int checks every name it is given, not just the first" {
+  # The sqlite adapter passes three names; only the first was ever checked.
+  A=1 B=2 C=soon run require_int A B C
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"C must be"* ]]
+}
+
+@test "require_int accepts several valid names" {
+  A=1 B=0 C=30 run require_int A B C
+
+  [ "$status" -eq 0 ]
+}
+
 # --- parse_bool --------------------------------------------------------------
 
 @test "parse_bool treats true, 1, yes and on as true" {
