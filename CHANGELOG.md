@@ -9,6 +9,22 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed upload was reported as a successful backup.** With S3
+  unreachable, a run logged `Uploaded run` and `complete`, recorded
+  `outcome: success`, exited 0 and left the container `(healthy)`, so the
+  only copy was the local one — an `emptyDir` on Kubernetes. The backup ran as
+  `"$@" || rc=$?` inside the lock, which switches errexit off for everything
+  it calls; any step that did not check its own status could not fail the run.
+  It now runs under errexit, and the upload names itself when it fails. A
+  failed remote prune fails the run too, as it was always meant to. Affects
+  every backend and every version before this one.
+- **A failure that logged no `[ERROR]` line was never recorded or notified.**
+  Extracting the cause ran `grep | head` under pipefail; with no match it
+  aborted the reporting itself. The cause now falls back to the exit status,
+  as intended.
+
 ## [0.5.0] — 2026-10-15
 
 Redis on large datasets. The backup path no longer holds a copy of the dataset

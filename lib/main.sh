@@ -46,11 +46,17 @@ _require_bucket() {
 # Only one backup may run at a time per backup directory: a schedule that fires
 # faster than a dump completes would otherwise interleave two runs.
 _with_lock() {
-  local lock="${BACKUP_DIR}/.lock" rc=0
+  local lock="${BACKUP_DIR}/.lock" rc
   mkdir -p "$BACKUP_DIR"
   exec 200>"$lock"
   flock -n 200 || die "Another run holds the lock at ${lock}"
-  "$@" || rc=$?
+  # Called bare, never as `"$@" || rc=$?`: bash switches errexit off for a
+  # command on the left of || and for everything it calls, which once let a
+  # failed upload log "complete", record success and exit 0. Under errexit a
+  # failure exits the run's subshell right here, and the lock's descriptor
+  # closes with it.
+  "$@"
+  rc=$?
   # Release explicitly. Leaving the descriptor open holds the lock for the
   # lifetime of the process, which blocks any later run in the same shell.
   exec 200>&-
@@ -125,7 +131,11 @@ do_backup() {
   mv -- "$staging" "$run_dir"
 
   if s3_enabled; then
-    s3_upload_run "$run_dir" "$S3_PREFIX" "$RUN_ID"
+    # Checked by name as well as by errexit: the AWS CLI's own message is not
+    # an [ERROR] line, so without this the recorded cause would only be an
+    # exit status. The local copy stays, so the run still counts there.
+    s3_upload_run "$run_dir" "$S3_PREFIX" "$RUN_ID" ||
+      die "Upload of run ${RUN_ID} to $(s3_uri "$S3_PREFIX" "$RUN_ID") failed"
     log_ok "Uploaded run ${RUN_ID}"
   else
     log_info "No S3_BUCKET configured — keeping this run locally only"
@@ -243,8 +253,11 @@ _run_and_report() {
 
   if ((rc != 0)); then
     # First, not last: the earliest error is the cause, anything after it is
-    # the driver unwinding.
-    error="$(grep -a '\[ERROR\]' "$err_file" | head -n1 | sed 's/.*\[ERROR\] *//')"
+    # the driver unwinding. A failure that logged no [ERROR] at all (an
+    # unchecked command under errexit) leaves grep matching nothing; under
+    # pipefail that used to abort here, before the failure was recorded or
+    # notified. -m1 rather than `| head`, which can SIGPIPE grep.
+    error="$(grep -a -m1 '\[ERROR\]' "$err_file" | sed 's/.*\[ERROR\] *//' || true)"
     [[ -n "$error" ]] || error="exited with status ${rc}"
   fi
   rm -f -- "$err_file"
