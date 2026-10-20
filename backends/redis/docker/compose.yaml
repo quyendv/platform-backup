@@ -1,8 +1,9 @@
-# Scheduled Redis backups on a Docker host. ../README.md, section "Docker", has
-# the walkthrough.
+# Redis backups on a Docker host, scheduled or one-shot. ../README.md,
+# section "Docker", has the walkthrough.
 #
 #   cp ../.env.example .env                  # fill in REDIS_URL, S3, SCHEDULE
-#   docker compose up -d                     # scheduled backups
+#   docker compose up -d                     # SCHEDULE set: backs up on it
+#                                            # SCHEDULE empty: one backup, exits
 #   docker compose run --rm backup run       # one backup now, same volume
 #   docker compose run --rm restore          # fetch + verify the newest run
 #
@@ -17,10 +18,6 @@ services:
   backup:
     image: *image
     env_file: .env
-    environment:
-      # Never empty here: without a schedule the container runs once, exits,
-      # and the restart policy starts it again — a backup loop.
-      SCHEDULE: "${SCHEDULE:-0 2 * * *}"
     volumes:
       # Persistent, so .last-run.json survives restarts: the HEALTHCHECK and
       # NOTIFY_ON=change both read it. A run holds the RDB and its compressed
@@ -34,7 +31,11 @@ services:
     # A server in another Compose project: join its network instead, and use
     # its service name in REDIS_URL.
     # networks: [cache]
-    restart: ${RESTART_POLICY:-unless-stopped}
+    # SCHEDULE set: the container stays up and backs up on that cron; set
+    # RESTART_POLICY=unless-stopped too, so it survives a reboot. SCHEDULE
+    # empty: one backup, then it exits — keep the policy at "no", or the
+    # restart policy turns one backup into a loop.
+    restart: ${RESTART_POLICY:-no}
 
   # Manual runs only. Kept apart from `backup` so a fetch or restore never
   # writes the scheduled job's state file. The image runs as uid 999, so give it

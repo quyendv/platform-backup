@@ -150,8 +150,11 @@ sudo chmod 0400     secrets/role-id secrets/secret-id
 
 Leave `VAULT_TOKEN` out of `.env`. The compose file forces it empty for the
 `backup` service anyway, because a value there would win over the agent's file.
-`VAULT_ADDR` in `.env` is read by both containers: Compose passes it to the
-agent, which never sees the S3 credentials.
+Both containers read `.env`, so `VAULT_ADDR` and `VAULT_CACERT` are set in one
+place. The agent takes it as an `env_file` rather than through `${VAULT_ADDR}`
+on purpose: in interpolation, Compose lets the invoking shell's environment
+win over `.env`, and an operator's shell that exports its own `VAULT_ADDR`
+would silently point the agent at that address instead.
 
 The secret-id is the one credential left on the host. Treat it like a
 password: it is git-ignored, owned by the agent's uid, and — with the bindings
@@ -170,9 +173,11 @@ The `backup` service waits for the agent to be healthy, which means a token
 file exists. The token lives on a `tmpfs` volume owned by uid 100: it is never
 written to disk, and it disappears when the agent stops.
 
-An empty `SCHEDULE` becomes `0 2 * * *` (daily, 02:00 UTC) in the `backup`
-service: without one the container would back up once, exit, and be restarted
-by its restart policy — a backup loop. The `/backup` volume is persistent, so
+With `SCHEDULE` set, `docker compose up -d` leaves the container running and
+backing up on that cron; add `RESTART_POLICY=unless-stopped` to `.env` so it
+comes back after a reboot. With `SCHEDULE` empty it takes one backup and exits,
+like the image itself, and the restart policy has to stay at its default `no`:
+otherwise every exit restarts it, and one backup becomes a loop. The `/backup` volume is persistent, so
 `docker ps` shows `(unhealthy)` once a run fails, and `NOTIFY_ON=change` works.
 
 ### 4. Rotating the secret-id
@@ -320,8 +325,11 @@ kubectl -n <your-namespace> delete secret vault-restore-token
 
 The restore is applied with `-force`, which is what allows a snapshot to be
 loaded into a Vault whose cluster identity differs from the one it was taken
-from. Vault seals itself afterwards; unseal it with the keys **belonging to the
-snapshot**, not the ones for the cluster you just overwrote. Auth methods are
+from. Loaded into another cluster, it brings that cluster's keyring: unseal
+with the keys **belonging to the snapshot**, not the ones for the cluster you
+just overwrote. Loaded back into the cluster it came from, Vault stays unsealed
+and serves the restored data at once (measured on 1.18: a secret changed after
+the backup read its old value again, and the next backup ran normally). Auth methods are
 part of the snapshot too: a role or secret-id created after the snapshot was
 taken no longer exists once it is restored, so the agent may need a new
 secret-id.
@@ -334,5 +342,6 @@ secret-id.
 | Agent logs `error authenticating` with `permission denied` | wrong role-id, a destroyed secret-id, or a source address outside `secret_id_bound_cidrs` | check the address Vault sees in its audit log; issue a new secret-id |
 | Agent logs `connection refused` or `i/o timeout` | Vault unreachable from the agent's network | a host firewall that only accepts traffic from `docker0` drops packets from the Compose project's own bridge; add `network_mode: bridge` to both services, and use docker0's subnet in the CIDR bindings |
 | Backup logs `Set VAULT_TOKEN, or VAULT_TOKEN_FILE …` | no token file yet | the agent has not logged in; read its logs |
+| `docker compose up` hangs on `vault-agent`, then fails as unhealthy | the agent never logged in; `backup` waits for it | `docker compose logs vault-agent` names the address and the error |
 | Agent logs `permission denied` opening `/vault/approle/secret-id` | the agent (uid 100) cannot read the file | `sudo chown 100:1000 secrets/*` |
 | `backup` stays `(unhealthy)` after a fix | the last recorded run is still the failure | `docker compose run --rm backup run` |

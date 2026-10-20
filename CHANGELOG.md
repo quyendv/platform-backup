@@ -16,8 +16,9 @@ Deployment files and documentation only; no image changes.
 - **A Docker deployment for every backend**, `backends/<name>/docker/compose.yaml`,
   beside the Kubernetes one. Each pins a release tag, is its own Compose
   project, keeps `/backup` on a persistent volume so the `HEALTHCHECK` and
-  `NOTIFY_ON=change` work, defaults an empty `SCHEDULE` to daily (a one-shot
-  container under a restart policy is a backup loop), and has a separate
+  `NOTIFY_ON=change` work, keeps the image's meaning of `SCHEDULE` (set: on
+  that cron; empty: once) with `RESTART_POLICY` defaulting to `no` so a
+  one-shot run is never restarted into a loop, and has a separate
   `restore` service so a manual fetch or restore never overwrites the
   scheduled job's state. The root `compose.yaml` stays as the development file
   that builds from source.
@@ -40,6 +41,8 @@ Deployment files and documentation only; no image changes.
   after creation and every run after that failed with `403 invalid token`
   while the container stayed `Up`.
 - **The README lists release tags** and says what the moving ones are.
+- **Every Kubernetes manifest pins 0.5.0** (`0.5.0-pg17`, `0.5.0-redis8`).
+  They pinned 0.2.0, or the moving `redis8` and `latest` tags.
 
 ## [0.5.0] — 2026-10-15
 

@@ -33,11 +33,21 @@ SKIP_SETCAP
 LIST
 }
 
+# Keys Docker Compose interpolates into backends/*/docker/compose.yaml. They
+# live in the same .env, but the image never sees them.
+compose_native() {
+  cat <<'LIST'
+RESTART_POLICY
+SQLITE_VOLUME
+LIST
+}
+
 # Everything the shell sources actually reference.
 known_keys() {
   {
     aws_native
     vault_native
+    compose_native
     grep -rhoE '\b[A-Z][A-Z0-9_]{2,}\b' \
       "$REPO_ROOT"/lib/*.sh "$REPO_ROOT"/entrypoint.sh \
       "$REPO_ROOT"/healthcheck.sh "$REPO_ROOT"/backends/*/backend.sh

@@ -1,9 +1,9 @@
-# Scheduled Vault backups on a Docker host, with a token that never expires
-# unnoticed. ../README.md walks through the Vault side.
+# Vault backups on a Docker host, with a token that never expires unnoticed.
+# ../README.md walks through the Vault side.
 #
 #   cp ../.env.example .env                 # fill in VAULT_ADDR, S3, SCHEDULE
 #   mkdir -p secrets                        # role-id and secret-id go here
-#   docker compose up -d                    # agent + scheduled backup
+#   docker compose up -d                    # agent + backup (on SCHEDULE, or once)
 #   docker compose run --rm backup run      # one backup now, same volume
 #   docker compose run --rm restore         # fetch + verify the newest run
 #
@@ -23,9 +23,14 @@ services:
     # version is the conservative choice.
     image: hashicorp/vault:1.18
     command: ["agent", "-config=/vault/config/agent.hcl"]
+    # VAULT_ADDR (and VAULT_CACERT, if set) straight from .env. Not as
+    # ${VAULT_ADDR}: Compose lets the invoking shell's environment win over .env
+    # in interpolation, and a Vault operator's shell usually exports a
+    # VAULT_ADDR of its own, which then points the agent somewhere else.
+    env_file: .env
     environment:
-      # Read from .env by Compose itself; the agent never sees the S3 keys.
-      VAULT_ADDR: ${VAULT_ADDR:?set VAULT_ADDR in .env}
+      # The agent logs in with AppRole; a token left in .env must not stand in.
+      VAULT_TOKEN: ""
       # Agent needs no mlock, and setcap fails as the image's non-root user.
       SKIP_SETCAP: "true"
     volumes:
@@ -46,9 +51,6 @@ services:
     image: *image
     env_file: .env
     environment:
-      # Never empty here: without a schedule the container runs once, exits,
-      # and the restart policy starts it again — a backup loop.
-      SCHEDULE: "${SCHEDULE:-0 2 * * *}"
       VAULT_TOKEN_FILE: /vault/token/token
       # Forced empty: a VAULT_TOKEN left in .env would win over the file.
       VAULT_TOKEN: ""
@@ -62,7 +64,11 @@ services:
     depends_on:
       vault-agent:
         condition: service_healthy
-    restart: ${RESTART_POLICY:-unless-stopped}
+    # SCHEDULE set: the container stays up and backs up on that cron; set
+    # RESTART_POLICY=unless-stopped too, so it survives a reboot. SCHEDULE
+    # empty: one backup, then it exits — keep the policy at "no", or the
+    # restart policy turns one backup into a loop.
+    restart: ${RESTART_POLICY:-no}
 
   # Manual runs only. Kept apart from `backup` so a fetch or restore never
   # writes the scheduled job's state file.

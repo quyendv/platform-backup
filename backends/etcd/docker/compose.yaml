@@ -1,8 +1,9 @@
-# Scheduled etcd snapshots on a control-plane host. ../README.md, section
-# "Docker", has the walkthrough.
+# etcd snapshots on a control-plane host, scheduled or one-shot. ../README.md,
+# section "Docker", has the walkthrough.
 #
 #   cp ../.env.example .env                  # fill in ETCD_MODE, S3, SCHEDULE
-#   docker compose up -d                     # scheduled snapshots
+#   docker compose up -d                     # SCHEDULE set: snapshots on it
+#                                            # SCHEDULE empty: one snapshot, exits
 #   docker compose run --rm backup run       # one snapshot now, same volume
 #   docker compose run --rm restore          # fetch + verify the newest run
 #
@@ -18,9 +19,6 @@ services:
     image: *image
     env_file: .env
     environment:
-      # Never empty here: without a schedule the container runs once, exits,
-      # and the restart policy starts it again — a backup loop.
-      SCHEDULE: "${SCHEDULE:-0 2 * * *}"
     # etcd listens on the host, on 127.0.0.1:2379 for kubeadm.
     network_mode: host
     volumes:
@@ -34,7 +32,11 @@ services:
       # certificates it names, instead of the line above.
       # - /etc/etcd.env:/etc/etcd.env:ro
       # - /etc/ssl/etcd:/etc/ssl/etcd:ro
-    restart: ${RESTART_POLICY:-unless-stopped}
+    # SCHEDULE set: the container stays up and backs up on that cron; set
+    # RESTART_POLICY=unless-stopped too, so it survives a reboot. SCHEDULE
+    # empty: one backup, then it exits — keep the policy at "no", or the
+    # restart policy turns one backup into a loop.
+    restart: ${RESTART_POLICY:-no}
 
   # Manual runs only: download and checksum-verify a snapshot into ./restore,
   # ready for `etcdctl snapshot restore` on each member.

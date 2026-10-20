@@ -74,8 +74,7 @@ a pinned release tag and a persistent `/backup` volume.
 
 ```bash
 cd backends/sqlite/docker
-cp ../.env.example .env        # SQLITE_PATH, the S3 settings, SCHEDULE
-echo SQLITE_VOLUME=<the application's volume> >> .env   # read by Compose only
+cp ../.env.example .env        # SQLITE_PATH, SQLITE_VOLUME, the S3 settings, SCHEDULE
 docker compose up -d
 docker compose run --rm backup run   # one backup now, against the same volume
 docker compose ps                    # (healthy) once a run has succeeded
@@ -97,9 +96,11 @@ docker stop <application container>    # the application must be stopped first
 docker compose run --rm -e MODE=restore restore
 ```
 
-An empty `SCHEDULE` becomes `0 2 * * *` (daily, 02:00 UTC) in the `backup`
-service: without one the container would back up once, exit, and be restarted
-by its restart policy — a backup loop.
+With `SCHEDULE` set, `docker compose up -d` leaves the container running and
+backing up on that cron; add `RESTART_POLICY=unless-stopped` to `.env` so it
+comes back after a reboot. With `SCHEDULE` empty it takes one backup and exits,
+like the image itself, and the restart policy has to stay at its default `no`:
+otherwise every exit restarts it, and one backup becomes a loop.
 
 The `/backup` volume is persistent, so `.last-run.json` survives restarts:
 `docker ps` shows `(unhealthy)` once a run fails, and `NOTIFY_ON=change` works
