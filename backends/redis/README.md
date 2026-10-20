@@ -248,7 +248,7 @@ docker compose run --rm -e MODE=restore -e RESTORE_FLUSH=true restore
 ```
 
 Size the `/backup` volume as described under [Sizing](#sizing), and match the
-image tag to the server (`0.5.0-redis7`, `0.5.0-redis8`) as described under
+image tag to the server (`0.5.1-redis7`, `0.5.1-redis8`) as described under
 [Choosing a tag](#choosing-a-tag). For a large dataset, prefer the
 [offline restore](#offline-restore-docker) over `MODE=restore`.
 

@@ -9,6 +9,8 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-10-20
+
 Every image gets one fix that matters: a backup whose upload failed was
 reported as a success. Upgrade from any earlier version. Everything else here
 is deployment files and documentation; 0.5.0 artifacts verify, fetch and
@@ -44,8 +46,9 @@ restore unchanged.
   after creation and every run after that failed with `403 invalid token`
   while the container stayed `Up`.
 - **The README lists release tags** and says what the moving ones are.
-- **Every Kubernetes manifest pins 0.5.0** (`0.5.0-pg17`, `0.5.0-redis8`).
-  They pinned 0.2.0, or the moving `redis8` and `latest` tags.
+- **Every Kubernetes manifest pins 0.5.1** (`0.5.1-pg17`, `0.5.1-redis8`), as
+  do the new compose files. They pinned 0.2.0, or the moving `redis8` and
+  `latest` tags.
 
 ### Fixed
 
@@ -413,7 +416,8 @@ Carried over from the predecessor repositories:
 - **arm64 is only built on release tags**, so it can break between releases.
   `mise run verify:arm` covers it in the meantime.
 
-[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/quyendv/platform-backup/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/quyendv/platform-backup/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/quyendv/platform-backup/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/quyendv/platform-backup/compare/v0.2.0...v0.3.0
