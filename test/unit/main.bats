@@ -123,6 +123,55 @@ fake_backend() {
   [[ "$output" == *"s3://my-bucket/backups/fake/"* ]]
 }
 
+# An unreachable endpoint used to log "Uploaded run", "complete", record
+# success and exit 0: the backup ran under `"$@" || rc=$?`, which switches
+# errexit off for everything it calls, so nothing unchecked could fail it.
+
+@test "a failed upload fails the run and records why" {
+  stub_aws_error 'upload failed: Connect timeout on endpoint URL'
+
+  MODE=backup S3_BUCKET=my-bucket run main
+
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"Uploaded run"* ]]
+  [[ "$output" != *"complete"* ]]
+  run jq -r '.outcome, .error' "$BACKUP_DIR/.last-run.json"
+  [ "${lines[0]}" = "failure" ]
+  [[ "${lines[1]}" == *"pload"* ]]
+}
+
+@test "a failed remote prune fails the run" {
+  # Upload succeeds, listing the prefix for retention does not.
+  cat >"$STUB_BIN/aws" <<'STUB'
+#!/usr/bin/env bash
+[[ "$*" == "s3 ls"* ]] && { echo 'Connect timeout on endpoint URL' >&2; exit 254; }
+exit 0
+STUB
+
+  MODE=backup S3_BUCKET=my-bucket run main
+
+  [ "$status" -ne 0 ]
+  run jq -r '.outcome, .error' "$BACKUP_DIR/.last-run.json"
+  [ "${lines[0]}" = "failure" ]
+  # The listing's own error is the earliest, so it is the recorded cause.
+  [[ "${lines[1]}" == *"s3://my-bucket/backups/fake/"* ]]
+}
+
+@test "any unchecked failure inside the locked backup fails the run" {
+  # Structural: errexit has to hold inside the lock, not only where a step
+  # remembered to check its own status.
+  prune_local() { false; }
+
+  MODE=backup run main
+
+  [ "$status" -ne 0 ]
+  # It logged no [ERROR], which used to abort the reporting before the
+  # failure was recorded; the exit status stands in for the message.
+  run jq -r '.outcome, .error' "$BACKUP_DIR/.last-run.json"
+  [ "${lines[0]}" = "failure" ]
+  [ "${lines[1]}" = "exited with status 1" ]
+}
+
 @test "backup prunes local runs beyond KEEP_LOCAL" {
   mkdir -p "$BACKUP_DIR"/2026010{1,2,3}_000000
 

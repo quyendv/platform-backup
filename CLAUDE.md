@@ -103,6 +103,12 @@ Two things are load-bearing there:
   `PIPESTATUS` can be read; without `set -e` inside, the entire run executed
   without errexit and a failed `pg_dump` surfaced three steps later as
   "artifact too small".
+- **Nothing between there and a step may sit on the left of `||` or `&&`, or
+  in an `if`.** Bash switches errexit off for such a command and for every
+  function it calls, however deep. `_with_lock` once ran the backup as
+  `"$@" || rc=$?`, so a failed upload logged "complete", recorded success and
+  exited 0 (0.5.x). Run it bare, and check failures by name only to give them
+  a message.
 
 Notifications must never change a run's outcome: each channel runs isolated,
 every curl is bounded by `NOTIFY_TIMEOUT`, and `notify_run` always returns 0.
