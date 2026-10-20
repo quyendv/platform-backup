@@ -3,3 +3,6 @@
 /backup/
 /restore/
 .DS_Store
+# Deployments under backends/*/docker/: credentials and fetched runs.
+secrets/
+backends/*/docker/restore/

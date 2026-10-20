@@ -67,6 +67,47 @@ With a ReadWriteOnce volume the container must run on the same node as the
 application. [k8s/cronjob.yaml](k8s/cronjob.yaml) has the `podAffinity` and the
 security context, with placeholders for the application's label and claim.
 
+## Docker
+
+[`docker/compose.yaml`](docker/compose.yaml) runs the image on a schedule, with
+a pinned release tag and a persistent `/backup` volume.
+
+```bash
+cd backends/sqlite/docker
+cp ../.env.example .env        # SQLITE_PATH, SQLITE_VOLUME, the S3 settings, SCHEDULE
+docker compose up -d
+docker compose run --rm backup run   # one backup now, against the same volume
+docker compose ps                    # (healthy) once a run has succeeded
+docker compose logs -f backup
+```
+
+**Mounting the database.** Set `SQLITE_VOLUME` to the application's existing
+Docker volume (`docker volume ls`); it is mounted at `/data`, so `SQLITE_PATH`
+is `/data/<file>`. For a bind mount, replace the `app-data` volume in the
+compose file with the host directory. The service runs as root with only
+`CHOWN`, `DAC_OVERRIDE` and `FOWNER`, for the reasons under
+[How the copy is made](#how-the-copy-is-made).
+
+Restore and fetch:
+
+```bash
+docker compose run --rm restore        # download + verify into ./restore
+docker stop <application container>    # the application must be stopped first
+docker compose run --rm -e MODE=restore restore
+```
+
+With `SCHEDULE` set, `docker compose up -d` leaves the container running and
+backing up on that cron; add `RESTART_POLICY=unless-stopped` to `.env` so it
+comes back after a reboot. With `SCHEDULE` empty it takes one backup and exits,
+like the image itself, and the restart policy has to stay at its default `no`:
+otherwise every exit restarts it, and one backup becomes a loop.
+
+The `/backup` volume is persistent, so `.last-run.json` survives restarts:
+`docker ps` shows `(unhealthy)` once a run fails, and `NOTIFY_ON=change` works
+here, unlike in Kubernetes. Set `HEALTHCHECK_MAX_AGE` as well to catch a
+schedule that stopped firing. `restore` is a separate service so that a manual
+fetch or restore never overwrites the scheduled job's state.
+
 ## Restore
 
 **Stop the application first.** Restore replaces the file, and an open, idle

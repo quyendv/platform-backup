@@ -9,6 +9,44 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+Every image gets one fix that matters: a backup whose upload failed was
+reported as a success. Upgrade from any earlier version. Everything else here
+is deployment files and documentation; 0.5.0 artifacts verify, fetch and
+restore unchanged.
+
+### Added
+
+- **A Docker deployment for every backend**, `backends/<name>/docker/compose.yaml`,
+  beside the Kubernetes one. Each pins a release tag, is its own Compose
+  project, keeps `/backup` on a persistent volume so the `HEALTHCHECK` and
+  `NOTIFY_ON=change` work, keeps the image's meaning of `SCHEDULE` (set: on
+  that cron; empty: once) with `RESTART_POLICY` defaulting to `no` so a
+  one-shot run is never restarted into a loop, and has a separate
+  `restore` service so a manual fetch or restore never overwrites the
+  scheduled job's state. The root `compose.yaml` stays as the development file
+  that builds from source.
+- **vault: tokens that keep working.** The Docker deployment runs Vault Agent
+  as a sidecar, logging in with AppRole and writing the token to an in-memory
+  volume; the Kubernetes CronJob runs it as an init container logging in with
+  the pod's ServiceAccount (Kubernetes auth). The image reads
+  `VAULT_TOKEN_FILE` at the start of every run, so it always uses the agent's
+  current token.
+
+### Changed
+
+- **vault: the Kubernetes manifests no longer take a `VAULT_TOKEN`.** Migration:
+  configure Kubernetes auth and the `vault-backup` role (backends/vault/README.md),
+  then apply `k8s/cronjob.yaml`, which adds a ServiceAccount and a ConfigMap.
+  `k8s/restore-job.yaml` reads its privileged token from a separate
+  `vault-restore-token` Secret, created for the restore and deleted after it.
+- **vault: the documentation stops recommending periodic tokens.** The image
+  never renews a token, so `vault token create -period=…` expired one period
+  after creation and every run after that failed with `403 invalid token`
+  while the container stayed `Up`.
+- **The README lists release tags** and says what the moving ones are.
+- **Every Kubernetes manifest pins 0.5.0** (`0.5.0-pg17`, `0.5.0-redis8`).
+  They pinned 0.2.0, or the moving `redis8` and `latest` tags.
+
 ### Fixed
 
 - **A failed upload was reported as a successful backup.** With S3

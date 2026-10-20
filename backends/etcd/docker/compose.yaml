@@ -1,0 +1,58 @@
+# etcd snapshots on a control-plane host, scheduled or one-shot. ../README.md,
+# section "Docker", has the walkthrough.
+#
+#   cp ../.env.example .env                  # fill in ETCD_MODE, S3, SCHEDULE
+#   docker compose up -d                     # SCHEDULE set: snapshots on it
+#                                            # SCHEDULE empty: one snapshot, exits
+#   docker compose run --rm backup run       # one snapshot now, same volume
+#   docker compose run --rm restore          # fetch + verify the newest run
+#
+# This image backs up and fetches; it never restores. Restoring etcd rebuilds a
+# stopped member's data directory on the host — ../README.md has the procedure.
+
+name: platform-backup-etcd
+
+x-image: &image ghcr.io/quyendv/platform-backup/etcd:0.5.0
+
+services:
+  backup:
+    image: *image
+    env_file: .env
+    environment:
+    # etcd listens on the host, on 127.0.0.1:2379 for kubeadm.
+    network_mode: host
+    volumes:
+      # Persistent, so .last-run.json survives restarts: the HEALTHCHECK and
+      # NOTIFY_ON=change both read it.
+      - backup:/backup
+      # kubeadm (ETCD_MODE=kubeadm): the client certificates. Root-only
+      # readable, which is why the image runs as root.
+      - /etc/kubernetes/pki/etcd:/etc/kubernetes/pki/etcd:ro
+      # kubespray (ETCD_MODE=kubespray): etcd's environment file and the
+      # certificates it names, instead of the line above.
+      # - /etc/etcd.env:/etc/etcd.env:ro
+      # - /etc/ssl/etcd:/etc/ssl/etcd:ro
+    # SCHEDULE set: the container stays up and backs up on that cron; set
+    # RESTART_POLICY=unless-stopped too, so it survives a reboot. SCHEDULE
+    # empty: one backup, then it exits — keep the policy at "no", or the
+    # restart policy turns one backup into a loop.
+    restart: ${RESTART_POLICY:-no}
+
+  # Manual runs only: download and checksum-verify a snapshot into ./restore,
+  # ready for `etcdctl snapshot restore` on each member.
+  restore:
+    profiles: [manual]
+    image: *image
+    env_file: .env
+    environment:
+      MODE: fetch
+      SCHEDULE: ""
+      BACKUP_DIR: /tmp/backup
+      RESTORE_DIR: /restore
+      NOTIFY_ON: never
+    volumes:
+      - ./restore:/restore
+    restart: "no"
+
+volumes:
+  backup:

@@ -24,21 +24,42 @@ AWS_ENDPOINT_URL_S3
 LIST
 }
 
+# Keys HashiCorp's own vault tooling reads: VAULT_CACERT by the CLI in the
+# vault image, SKIP_SETCAP by the entrypoint of the Vault Agent sidecar.
+vault_native() {
+  cat <<'LIST'
+VAULT_CACERT
+SKIP_SETCAP
+LIST
+}
+
+# Keys Docker Compose interpolates into backends/*/docker/compose.yaml. They
+# live in the same .env, but the image never sees them.
+compose_native() {
+  cat <<'LIST'
+RESTART_POLICY
+SQLITE_VOLUME
+LIST
+}
+
 # Everything the shell sources actually reference.
 known_keys() {
   {
     aws_native
+    vault_native
+    compose_native
     grep -rhoE '\b[A-Z][A-Z0-9_]{2,}\b' \
       "$REPO_ROOT"/lib/*.sh "$REPO_ROOT"/entrypoint.sh \
       "$REPO_ROOT"/healthcheck.sh "$REPO_ROOT"/backends/*/backend.sh
   } | LC_ALL=C sort -u
 }
 
-# Keys a manifest's stringData or an .env.example sets, commented or not.
+# Keys a manifest's stringData, a compose file's environment or an
+# .env.example sets, commented or not.
 declared_keys() {
   {
     grep -rhoE '^[[:space:]]*#?[[:space:]]*[A-Z][A-Z0-9_]{2,}:' \
-      "$REPO_ROOT"/backends/*/k8s/*.yaml
+      "$REPO_ROOT"/backends/*/k8s/*.yaml "$REPO_ROOT"/backends/*/docker/compose.yaml
     grep -rhoE '^[[:space:]]*#?[[:space:]]*[A-Z][A-Z0-9_]{2,}=' \
       "$REPO_ROOT"/backends/*/.env.example
   } | tr -d ' #:=' | LC_ALL=C sort -u

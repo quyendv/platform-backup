@@ -49,7 +49,8 @@ backend_restore_hint  # optional; printed when restore is unsupported
 ```
 
 Adding a backend means one `backend.sh`, one Dockerfile, one `.env.example`,
-k8s manifests, a bake target and a docs page — and no change to `lib/`.
+k8s manifests, a `docker/compose.yaml`, a bake target and a docs page — and no
+change to `lib/`.
 
 In the image everything lands at `/opt/platform-backup/{entrypoint.sh,lib/,backend.sh}`,
 so the build context is always the repo root and Dockerfiles are referenced by path.
@@ -128,8 +129,9 @@ already defaults to path-style; without one, virtual-hosted. Only
 `s3.addressing_style` in `~/.aws/config` can change it.
 
 Adding or renaming a variable means touching all of: the adapter or `lib/`, the
-backend's `.env.example`, its `k8s/*.yaml`, its `its own README.md`, and the
-table in `README.md`.
+backend's `.env.example`, its `k8s/*.yaml`, its `docker/compose.yaml`, its own
+`README.md`, and the table in `README.md`. `test/unit/env_keys.bats` fails on
+any key those files set that nothing reads.
 
 ## Testing
 

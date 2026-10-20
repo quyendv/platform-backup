@@ -1,0 +1,67 @@
+# SQLite backups on a Docker host, scheduled or one-shot. ../README.md,
+# section "Docker", has the walkthrough.
+#
+#   cp ../.env.example .env                  # SQLITE_PATH, SQLITE_VOLUME, S3, SCHEDULE
+#   docker compose up -d                     # SCHEDULE set: backs up on it
+#                                            # SCHEDULE empty: one backup, exits
+#   docker compose run --rm backup run       # one backup now, same volume
+#   docker compose run --rm restore          # fetch + verify the newest run
+#
+# The database is a file, so this container mounts the application's own data
+# volume, read-write: see ../README.md for why read-only is worse.
+
+name: platform-backup-sqlite
+
+x-image: &image ghcr.io/quyendv/platform-backup/sqlite:0.5.0
+
+x-sqlite: &sqlite
+  image: *image
+  env_file: .env
+  # Root, as the image runs, with only the capabilities it needs.
+  cap_drop: [ALL]
+  cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+  extra_hosts:
+    # Lets AWS_ENDPOINT_URL_S3=http://host.docker.internal:9000 reach an object
+    # store on this host.
+    - "host.docker.internal:host-gateway"
+
+services:
+  backup:
+    <<: *sqlite
+    volumes:
+      # Persistent, so .last-run.json survives restarts: the HEALTHCHECK and
+      # NOTIFY_ON=change both read it.
+      - backup:/backup
+      # The application's data, at the directory SQLITE_PATH points into.
+      - app-data:/data
+    # SCHEDULE set: the container stays up and backs up on that cron; set
+    # RESTART_POLICY=unless-stopped too, so it survives a reboot. SCHEDULE
+    # empty: one backup, then it exits — keep the policy at "no", or the
+    # restart policy turns one backup into a loop.
+    restart: ${RESTART_POLICY:-no}
+
+  # Manual runs only. Kept apart from `backup` so a fetch or restore never
+  # writes the scheduled job's state file.
+  #   docker compose run --rm restore                       # fetch
+  #   docker compose run --rm -e MODE=restore restore       # STOP THE APPLICATION FIRST
+  restore:
+    <<: *sqlite
+    profiles: [manual]
+    environment:
+      MODE: fetch
+      SCHEDULE: ""
+      BACKUP_DIR: /tmp/backup
+      RESTORE_DIR: /restore
+      NOTIFY_ON: never
+    volumes:
+      - app-data:/data
+      - ./restore:/restore
+    restart: "no"
+
+volumes:
+  backup:
+  # The application's existing volume. For a bind mount, replace `app-data:/data`
+  # above with `/srv/app/data:/data` and delete this entry.
+  app-data:
+    external: true
+    name: ${SQLITE_VOLUME:?set SQLITE_VOLUME in .env to the application's volume}
