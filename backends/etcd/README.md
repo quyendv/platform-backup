@@ -79,6 +79,46 @@ On kubeadm, stop etcd by moving `/etc/kubernetes/manifests/etcd.yaml` aside;
 put it back once every member's data directory has been rebuilt. Set
 `RESTORE_TIMESTAMP` on the fetch to pin a specific run.
 
+## Docker
+
+[`docker/compose.yaml`](docker/compose.yaml) runs the image on a schedule, with
+a pinned release tag and a persistent `/backup` volume.
+
+```bash
+cd backends/etcd/docker
+cp ../.env.example .env        # ETCD_MODE, the S3 settings, SCHEDULE
+docker compose up -d
+docker compose run --rm backup run   # one backup now, against the same volume
+docker compose ps                    # (healthy) once a run has succeeded
+docker compose logs -f backup
+```
+
+The service runs with host networking, because etcd listens on the host, and
+mounts the kubeadm client certificates read-only. For kubespray, swap the
+mounts for the commented ones and set `ETCD_MODE=kubespray`. Run it on one
+control-plane node: a snapshot from one member is a snapshot of the cluster.
+
+Restore and fetch:
+
+```bash
+docker compose run --rm restore        # download + verify into ./restore
+# then follow "Restore" above on each control-plane node
+```
+
+The image never restores, as explained under [Restore](#restore).
+
+With `SCHEDULE` set, `docker compose up -d` leaves the container running and
+backing up on that cron; add `RESTART_POLICY=unless-stopped` to `.env` so it
+comes back after a reboot. With `SCHEDULE` empty it takes one backup and exits,
+like the image itself, and the restart policy has to stay at its default `no`:
+otherwise every exit restarts it, and one backup becomes a loop.
+
+The `/backup` volume is persistent, so `.last-run.json` survives restarts:
+`docker ps` shows `(unhealthy)` once a run fails, and `NOTIFY_ON=change` works
+here, unlike in Kubernetes. Set `HEALTHCHECK_MAX_AGE` as well to catch a
+schedule that stopped firing. `restore` is a separate service so that a manual
+fetch or restore never overwrites the scheduled job's state.
+
 ## Kubernetes
 
 [`k8s/`](k8s/) has a CronJob pinned to a

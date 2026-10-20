@@ -83,7 +83,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: backup
-              image: ghcr.io/quyendv/platform-backup/redis:redis8
+              image: ghcr.io/quyendv/platform-backup/redis:0.5.1-redis8
               imagePullPolicy: Always
               envFrom:
                 - secretRef:

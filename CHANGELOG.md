@@ -9,6 +9,63 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-10-20
+
+Every image gets one fix that matters: a backup whose upload failed was
+reported as a success. Upgrade from any earlier version. Everything else here
+is deployment files and documentation; 0.5.0 artifacts verify, fetch and
+restore unchanged.
+
+### Added
+
+- **A Docker deployment for every backend**, `backends/<name>/docker/compose.yaml`,
+  beside the Kubernetes one. Each pins a release tag, is its own Compose
+  project, keeps `/backup` on a persistent volume so the `HEALTHCHECK` and
+  `NOTIFY_ON=change` work, keeps the image's meaning of `SCHEDULE` (set: on
+  that cron; empty: once) with `RESTART_POLICY` defaulting to `no` so a
+  one-shot run is never restarted into a loop, and has a separate
+  `restore` service so a manual fetch or restore never overwrites the
+  scheduled job's state. The root `compose.yaml` stays as the development file
+  that builds from source.
+- **vault: tokens that keep working.** The Docker deployment runs Vault Agent
+  as a sidecar, logging in with AppRole and writing the token to an in-memory
+  volume; the Kubernetes CronJob runs it as an init container logging in with
+  the pod's ServiceAccount (Kubernetes auth). The image reads
+  `VAULT_TOKEN_FILE` at the start of every run, so it always uses the agent's
+  current token.
+
+### Changed
+
+- **vault: the Kubernetes manifests no longer take a `VAULT_TOKEN`.** Migration:
+  configure Kubernetes auth and the `vault-backup` role (backends/vault/README.md),
+  then apply `k8s/cronjob.yaml`, which adds a ServiceAccount and a ConfigMap.
+  `k8s/restore-job.yaml` reads its privileged token from a separate
+  `vault-restore-token` Secret, created for the restore and deleted after it.
+- **vault: the documentation stops recommending periodic tokens.** The image
+  never renews a token, so `vault token create -period=…` expired one period
+  after creation and every run after that failed with `403 invalid token`
+  while the container stayed `Up`.
+- **The README lists release tags** and says what the moving ones are.
+- **Every Kubernetes manifest pins 0.5.1** (`0.5.1-pg17`, `0.5.1-redis8`), as
+  do the new compose files. They pinned 0.2.0, or the moving `redis8` and
+  `latest` tags.
+
+### Fixed
+
+- **A failed upload was reported as a successful backup.** With S3
+  unreachable, a run logged `Uploaded run` and `complete`, recorded
+  `outcome: success`, exited 0 and left the container `(healthy)`, so the
+  only copy was the local one — an `emptyDir` on Kubernetes. The backup ran as
+  `"$@" || rc=$?` inside the lock, which switches errexit off for everything
+  it calls; any step that did not check its own status could not fail the run.
+  It now runs under errexit, and the upload names itself when it fails. A
+  failed remote prune fails the run too, as it was always meant to. Affects
+  every backend and every version before this one.
+- **A failure that logged no `[ERROR]` line was never recorded or notified.**
+  Extracting the cause ran `grep | head` under pipefail; with no match it
+  aborted the reporting itself. The cause now falls back to the exit status,
+  as intended.
+
 ## [0.5.0] — 2026-10-15
 
 Redis on large datasets. The backup path no longer holds a copy of the dataset
@@ -359,7 +416,8 @@ Carried over from the predecessor repositories:
 - **arm64 is only built on release tags**, so it can break between releases.
   `mise run verify:arm` covers it in the meantime.
 
-[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/quyendv/platform-backup/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/quyendv/platform-backup/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/quyendv/platform-backup/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/quyendv/platform-backup/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/quyendv/platform-backup/compare/v0.2.0...v0.3.0

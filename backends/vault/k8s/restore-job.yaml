@@ -1,10 +1,15 @@
 # One-shot restore for vault. Reuses the CronJob's Secret, so the object store
 # settings cannot drift between backup and restore.
 #
-# This replaces the entire Raft state and needs a token far more privileged than backup-raft.
+# This replaces the entire Raft state and needs a token far more privileged than
+# backup-raft. That token comes from its own Secret, created for this restore
+# and deleted after it — never from the backup's agent:
 #
+#   kubectl -n <your-namespace> create secret generic vault-restore-token \
+#     --from-literal=VAULT_TOKEN=<privileged token>
 #   kubectl apply -f backends/vault/k8s/restore-job.yaml
 #   kubectl logs -f job/vault-restore -n <your-namespace>
+#   kubectl -n <your-namespace> delete secret vault-restore-token
 ---
 apiVersion: batch/v1
 kind: Job
@@ -18,8 +23,8 @@ spec:
       restartPolicy: Never
       containers:
         - name: restore
-          image: ghcr.io/quyendv/platform-backup/vault:0.2.0
-          imagePullPolicy: Always
+          image: ghcr.io/quyendv/platform-backup/vault:0.5.1
+          imagePullPolicy: IfNotPresent
           env:
             - name: MODE
               value: "restore"
@@ -29,6 +34,11 @@ spec:
             # A restore is deliberate and watched; notifying about it is noise.
             - name: NOTIFY_ON
               value: "never"
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vault-restore-token
+                  key: VAULT_TOKEN
           envFrom:
             - secretRef:
                 name: vault-backup

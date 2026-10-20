@@ -1,12 +1,13 @@
-# Least privilege for scripts/vault-backup.sh (vault operator raft snapshot save).
+# Least privilege for the vault backup image (vault operator raft snapshot save).
 #
 #   vault policy write backup-raft policies/backup-raft.hcl
-#   vault token create -policy=backup-raft -period=24h -orphan
 #
-# Use the token value as VAULT_TOKEN (or write it to VAULT_TOKEN_FILE).
-# Periodic tokens: renew before the period ends (e.g. vault token renew) or rotate the secret.
+# Give it to a machine identity, not to a hand-made token: an AppRole role on a
+# Docker host, a Kubernetes auth role in a cluster, with Vault Agent fetching
+# and renewing the token (../README.md, "Authentication"). The image itself
+# never renews a token, so a static one fails every run once it expires.
 #
-# Restore (vault-restore.sh) needs a different, much stronger policy — do not use this token for restore.
+# Restore needs a different, much stronger policy — do not grant it here.
 
 path "sys/storage/raft/snapshot" {
   capabilities = ["read"]
@@ -17,7 +18,8 @@ path "sys/health" {
   capabilities = ["read"]
 }
 
-# Optional: allow the job to renew this periodic token before it expires.
+# Lets Vault Agent renew the token it holds. Also part of Vault's built-in
+# default policy; listed so this policy stands on its own.
 path "auth/token/renew-self" {
   capabilities = ["update"]
 }

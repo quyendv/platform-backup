@@ -3,11 +3,52 @@
 #   kubectl apply -f backends/vault/k8s/cronjob.yaml
 #   kubectl create job --from=cronjob/vault-backup vault-backup-now -n <your-namespace>
 #
+# No Vault token is stored here. Each Job's init container is Vault Agent: it
+# logs in with the pod's ServiceAccount token (Kubernetes auth, role
+# "vault-backup"), writes a fresh Vault token to an in-memory emptyDir, and
+# exits. The backup container reads it through VAULT_TOKEN_FILE. A static token
+# would instead expire at its TTL or period and fail every run after that: the
+# image does not renew tokens. The Vault side is in ../README.md.
+#
 # One Secret rather than a ConfigMap alongside it: splitting them only buys
 # anything if RBAC separates who may read config from who may read credentials,
 # or if an external secret manager owns the Secret. Otherwise it is a second
 # object to keep in sync, and it puts the bucket and endpoint somewhere that is
 # usually readable by more principals.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-backup
+  namespace: <your-namespace>
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-backup-agent
+  namespace: <your-namespace>
+data:
+  agent.hcl: |
+    # Log in once and exit; the next Job logs in again.
+    exit_after_auth = true
+
+    auto_auth {
+      method "kubernetes" {
+        # Change when Kubernetes auth is mounted elsewhere, e.g. one mount per
+        # cluster: auth/kubernetes-prod.
+        mount_path = "auth/kubernetes"
+        config = {
+          role = "vault-backup"
+        }
+      }
+
+      sink "file" {
+        config = {
+          path = "/vault/token/token"
+          mode = 0640
+        }
+      }
+    }
 ---
 apiVersion: v1
 kind: Secret
@@ -18,8 +59,7 @@ type: Opaque
 stringData:
   # ── Vault ──────────────────────────────────────────────────────────────────
   VAULT_ADDR: "http://vault.<your-namespace>.svc.cluster.local:8200"
-  # A token with the backup-raft policy; see ../policies/backup-raft.hcl.
-  VAULT_TOKEN: ""
+  # No VAULT_TOKEN: it would win over the agent's file.
 
   # ── Object storage ─────────────────────────────────────────────────────────
   # Read by the AWS CLI itself. Omit both keys entirely to authenticate with an
@@ -77,17 +117,59 @@ spec:
       template:
         spec:
           restartPolicy: Never
+          serviceAccountName: vault-backup
+          securityContext:
+            # The vault user of both images, so the token file the agent writes
+            # (0640) is readable by the backup container and nobody else.
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 1000
+            fsGroup: 1000
+          initContainers:
+            - name: vault-agent
+              # Any recent agent works against any recent server; matching the
+              # server's version is the conservative choice.
+              image: hashicorp/vault:1.18
+              args: ["agent", "-config=/vault/config/agent.hcl"]
+              env:
+                - name: VAULT_ADDR
+                  valueFrom:
+                    secretKeyRef:
+                      name: vault-backup
+                      key: VAULT_ADDR
+                # No mlock needed, and setcap fails as a non-root user.
+                - name: SKIP_SETCAP
+                  value: "true"
+              volumeMounts:
+                - name: agent-config
+                  mountPath: /vault/config
+                - name: token
+                  mountPath: /vault/token
           containers:
             - name: backup
-              image: ghcr.io/quyendv/platform-backup/vault:0.2.0
-              imagePullPolicy: Always
+              image: ghcr.io/quyendv/platform-backup/vault:0.5.1
+              imagePullPolicy: IfNotPresent
               envFrom:
                 - secretRef:
                     name: vault-backup
+              env:
+                - name: VAULT_TOKEN_FILE
+                  value: /vault/token/token
               volumeMounts:
                 - name: backup
                   mountPath: /backup
+                - name: token
+                  mountPath: /vault/token
+                  readOnly: true
           volumes:
+            - name: agent-config
+              configMap:
+                name: vault-backup-agent
+            # The token lives in memory only, for the life of this pod.
+            - name: token
+              emptyDir:
+                medium: Memory
+                sizeLimit: 1Mi
             # Scratch for this run only. The Job's own status is what reports a
             # failure to the cluster; KEEP_REMOTE is what retains history.
             - name: backup

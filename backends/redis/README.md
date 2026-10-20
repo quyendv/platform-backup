@@ -218,6 +218,52 @@ Without it, keys are written with `REPLACE`: everything in the backup
 overwrites what is there, and only keys absent from the backup survive. The
 offline path has no such problem — it replaces the data files wholesale.
 
+## Docker
+
+[`docker/compose.yaml`](docker/compose.yaml) runs the image on a schedule, with
+a pinned release tag and a persistent `/backup` volume.
+
+```bash
+cd backends/redis/docker
+cp ../.env.example .env        # REDIS_URL, the S3 settings, SCHEDULE
+docker compose up -d
+docker compose run --rm backup run   # one backup now, against the same volume
+docker compose ps                    # (healthy) once a run has succeeded
+docker compose logs -f backup
+```
+
+**Reaching the server.** For a server on the same host with a published port,
+use `host.docker.internal` as the host: the compose file maps it to the host.
+For a server in another Compose project, uncomment `networks:` in the compose
+file, set the name to that project's network (`docker network ls`) and use the
+server's service name as the host.
+
+Restore and fetch:
+
+```bash
+mkdir -p restore && sudo chown 999 restore   # the image runs as uid 999
+docker compose run --rm restore                               # download + verify
+docker compose run --rm -e FETCH_DECOMPRESS=true restore      # an RDB to place by hand
+docker compose run --rm -e MODE=restore -e RESTORE_FLUSH=true restore
+```
+
+Size the `/backup` volume as described under [Sizing](#sizing), and match the
+image tag to the server (`0.5.1-redis7`, `0.5.1-redis8`) as described under
+[Choosing a tag](#choosing-a-tag). For a large dataset, prefer the
+[offline restore](#offline-restore-docker) over `MODE=restore`.
+
+With `SCHEDULE` set, `docker compose up -d` leaves the container running and
+backing up on that cron; add `RESTART_POLICY=unless-stopped` to `.env` so it
+comes back after a reboot. With `SCHEDULE` empty it takes one backup and exits,
+like the image itself, and the restart policy has to stay at its default `no`:
+otherwise every exit restarts it, and one backup becomes a loop.
+
+The `/backup` volume is persistent, so `.last-run.json` survives restarts:
+`docker ps` shows `(unhealthy)` once a run fails, and `NOTIFY_ON=change` works
+here, unlike in Kubernetes. Set `HEALTHCHECK_MAX_AGE` as well to catch a
+schedule that stopped firing. `restore` is a separate service so that a manual
+fetch or restore never overwrites the scheduled job's state.
+
 ## Redis Cluster
 
 Refused, deliberately. A cluster shards its keyspace across masters and

@@ -135,7 +135,7 @@ restore_offline() {
     -e "s|redis-data-<release>-master-0|redis-data-${REL}-master-0|g" \
     -e "s|image: docker.io/bitnamilegacy/redis:latest|image: ${CHART_IMAGE}|g" \
     "$ROOT/backends/redis/k8s/restore-offline-job.yaml" |
-    sed -e "s|image: ghcr.io/quyendv/platform-backup/redis:redis8|image: ${BACKUP_IMAGE}\n          imagePullPolicy: Never|" |
+    sed -e "s|image: ghcr.io/quyendv/platform-backup/redis:0.5.1-redis8|image: ${BACKUP_IMAGE}\n          imagePullPolicy: Never|" |
     kc apply -f - >/dev/null
 
   kc wait --for=condition=complete job/redis-restore-offline --timeout=600s >/dev/null || {

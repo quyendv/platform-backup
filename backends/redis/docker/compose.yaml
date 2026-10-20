@@ -1,0 +1,69 @@
+# Redis backups on a Docker host, scheduled or one-shot. ../README.md,
+# section "Docker", has the walkthrough.
+#
+#   cp ../.env.example .env                  # fill in REDIS_URL, S3, SCHEDULE
+#   docker compose up -d                     # SCHEDULE set: backs up on it
+#                                            # SCHEDULE empty: one backup, exits
+#   docker compose run --rm backup run       # one backup now, same volume
+#   docker compose run --rm restore          # fetch + verify the newest run
+#
+# The tag must be at least the server's major version: RDB is not backward
+# compatible. 0.5.1-redis7 and 0.5.1-redis8 exist.
+
+name: platform-backup-redis
+
+x-image: &image ghcr.io/quyendv/platform-backup/redis:0.5.1-redis8
+
+services:
+  backup:
+    image: *image
+    env_file: .env
+    volumes:
+      # Persistent, so .last-run.json survives restarts: the HEALTHCHECK and
+      # NOTIFY_ON=change both read it. A run holds the RDB and its compressed
+      # copy at once: allow about 1.5x the server's last RDB, plus KEEP_LOCAL
+      # compressed runs.
+      - backup:/backup
+    extra_hosts:
+      # Lets REDIS_URL=redis://host.docker.internal:6379 reach a server on
+      # this host.
+      - "host.docker.internal:host-gateway"
+    # A server in another Compose project: join its network instead, and use
+    # its service name in REDIS_URL.
+    # networks: [cache]
+    # SCHEDULE set: the container stays up and backs up on that cron; set
+    # RESTART_POLICY=unless-stopped too, so it survives a reboot. SCHEDULE
+    # empty: one backup, then it exits — keep the policy at "no", or the
+    # restart policy turns one backup into a loop.
+    restart: ${RESTART_POLICY:-no}
+
+  # Manual runs only. Kept apart from `backup` so a fetch or restore never
+  # writes the scheduled job's state file. The image runs as uid 999, so give it
+  # the directory first: mkdir -p restore && sudo chown 999 restore
+  #   docker compose run --rm restore                                   # fetch
+  #   docker compose run --rm -e FETCH_DECOMPRESS=true restore          # an RDB to place
+  #   docker compose run --rm -e MODE=restore restore                   # MIGRATE into the server
+  restore:
+    profiles: [manual]
+    image: *image
+    env_file: .env
+    environment:
+      MODE: fetch
+      SCHEDULE: ""
+      BACKUP_DIR: /tmp/backup
+      RESTORE_DIR: /restore
+      NOTIFY_ON: never
+    volumes:
+      - ./restore:/restore
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # networks: [cache]
+    restart: "no"
+
+volumes:
+  backup:
+
+# networks:
+#   cache:
+#     external: true
+#     name: <the server's network, from `docker network ls`>

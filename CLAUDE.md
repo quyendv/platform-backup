@@ -49,7 +49,8 @@ backend_restore_hint  # optional; printed when restore is unsupported
 ```
 
 Adding a backend means one `backend.sh`, one Dockerfile, one `.env.example`,
-k8s manifests, a bake target and a docs page — and no change to `lib/`.
+k8s manifests, a `docker/compose.yaml`, a bake target and a docs page — and no
+change to `lib/`.
 
 In the image everything lands at `/opt/platform-backup/{entrypoint.sh,lib/,backend.sh}`,
 so the build context is always the repo root and Dockerfiles are referenced by path.
@@ -103,6 +104,12 @@ Two things are load-bearing there:
   `PIPESTATUS` can be read; without `set -e` inside, the entire run executed
   without errexit and a failed `pg_dump` surfaced three steps later as
   "artifact too small".
+- **Nothing between there and a step may sit on the left of `||` or `&&`, or
+  in an `if`.** Bash switches errexit off for such a command and for every
+  function it calls, however deep. `_with_lock` once ran the backup as
+  `"$@" || rc=$?`, so a failed upload logged "complete", recorded success and
+  exited 0 (0.5.x). Run it bare, and check failures by name only to give them
+  a message.
 
 Notifications must never change a run's outcome: each channel runs isolated,
 every curl is bounded by `NOTIFY_TIMEOUT`, and `notify_run` always returns 0.
@@ -122,8 +129,9 @@ already defaults to path-style; without one, virtual-hosted. Only
 `s3.addressing_style` in `~/.aws/config` can change it.
 
 Adding or renaming a variable means touching all of: the adapter or `lib/`, the
-backend's `.env.example`, its `k8s/*.yaml`, its `its own README.md`, and the
-table in `README.md`.
+backend's `.env.example`, its `k8s/*.yaml`, its `docker/compose.yaml`, its own
+`README.md`, and the table in `README.md`. `test/unit/env_keys.bats` fails on
+any key those files set that nothing reads.
 
 ## Testing
 
@@ -192,7 +200,9 @@ Because nothing builds arm64 per-commit, it can rot silently. `mise run
 verify:arm` (or the manual `arm64` workflow) builds it and runs the tooling
 under emulation; do that before tagging, or after touching a Dockerfile.
 Building alone proves nothing — layers assemble for any architecture, so
-`test/smoke.sh` executes the actual binaries.
+`test/smoke.sh` executes the actual binaries. Locally the arm64 images load as
+`platform-backup-arm64/*`, never over the host-arch tags, and `verify:arm`
+removes them once the smoke test passes (`mise run clean:arm` by hand).
 
 ## History
 

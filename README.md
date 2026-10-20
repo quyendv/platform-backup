@@ -8,14 +8,18 @@ Six images, one implementation. Every backend runs the same driver and obeys
 the same environment contract; a backend adapter only knows how to dump and
 restore its own data.
 
-| Image | Tags |
-|---|---|
-| `ghcr.io/quyendv/platform-backup/postgresql` | `pg14` `pg15` `pg16` `pg17` `latest` (= pg17) |
-| `ghcr.io/quyendv/platform-backup/mongodb` | `latest` |
-| `ghcr.io/quyendv/platform-backup/etcd` | `latest` |
-| `ghcr.io/quyendv/platform-backup/vault` | `latest` |
-| `ghcr.io/quyendv/platform-backup/redis` | `redis7` `redis8` `latest` (= redis8) |
-| `ghcr.io/quyendv/platform-backup/sqlite` | `latest` |
+| Image | Release tags | Moving tags |
+|---|---|---|
+| `ghcr.io/quyendv/platform-backup/postgresql` | `0.5.1-pg14` … `0.5.1-pg17` | `pg14` `pg15` `pg16` `pg17` `latest` (= pg17) |
+| `ghcr.io/quyendv/platform-backup/mongodb` | `0.5.1` | `latest` |
+| `ghcr.io/quyendv/platform-backup/etcd` | `0.5.1` | `latest` |
+| `ghcr.io/quyendv/platform-backup/vault` | `0.5.1` | `latest` |
+| `ghcr.io/quyendv/platform-backup/redis` | `0.5.1-redis7` `0.5.1-redis8` | `redis7` `redis8` `latest` (= redis8) |
+| `ghcr.io/quyendv/platform-backup/sqlite` | `0.5.1` | `latest` |
+
+Release tags never move. Moving tags are rebuilt on every push to `main` and
+`develop`, so they can carry unreleased changes: pin a release tag for anything
+you depend on, as the shipped compose files and manifests do.
 
 Each backend documents itself next to its own code:
 [postgresql](backends/postgresql/) · [mongodb](backends/mongodb/) ·
@@ -36,6 +40,38 @@ docker run --rm \
 
 Add `-e SCHEDULE="0 2 * * *"` and the container stays up, backing up on that
 cron. Leave `SCHEDULE` unset and it runs once and exits.
+
+## Running it
+
+Every backend ships two ready-made deployments next to its code:
+
+| | Docker host | Kubernetes |
+|---|---|---|
+| Where | `backends/<name>/docker/compose.yaml` | `backends/<name>/k8s/` |
+| Scheduling | `SCHEDULE` inside the container (supercronic) | a `CronJob`; `SCHEDULE` stays empty |
+| State between runs | a persistent `/backup` volume, so the `HEALTHCHECK` and `NOTIFY_ON=change` work | none: each run is a fresh pod, so leave `NOTIFY_ON=failure` |
+| Failure shows up as | `docker ps` → `(unhealthy)`, and notifications | the Job's `Failed` status, and notifications |
+| Restore | `docker compose run --rm restore` (fetch), `-e MODE=restore` | `k8s/restore-job.yaml` |
+
+```bash
+cd backends/postgresql/docker
+cp ../.env.example .env              # connection, S3 settings, SCHEDULE
+docker compose up -d                 # scheduled backups
+docker compose run --rm backup run   # one backup now
+docker compose run --rm restore      # download and verify the newest run
+```
+
+Each compose file is its own project (`name: platform-backup-<backend>`), so
+several backends can run on one host without sharing volumes. The walkthrough,
+including how to reach a server on the host or in another Compose project, is
+in the **Docker** section of each backend's page.
+
+Vault is the one backend with more moving parts: its token has to be renewed
+by something, and the image does not do it. Its compose file and CronJob
+include a Vault Agent for that — see [vault](backends/vault/#authentication-why-a-static-token-is-not-enough).
+
+The [`compose.yaml`](compose.yaml) at the repository root is for development:
+it builds the images from this checkout.
 
 ## Modes
 

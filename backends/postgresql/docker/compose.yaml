@@ -1,0 +1,64 @@
+# PostgreSQL backups on a Docker host, scheduled or one-shot. ../README.md,
+# section "Docker", has the walkthrough.
+#
+#   cp ../.env.example .env                  # fill in POSTGRES_*, S3, SCHEDULE
+#   docker compose up -d                     # SCHEDULE set: backs up on it
+#                                            # SCHEDULE empty: one backup, exits
+#   docker compose run --rm backup run       # one backup now, same volume
+#   docker compose run --rm restore          # fetch + verify the newest run
+#
+# The tag must match the server's major version: pg_dump refuses to dump a
+# newer server. 0.5.1-pg14 … 0.5.1-pg17 exist.
+
+name: platform-backup-postgresql
+
+x-image: &image ghcr.io/quyendv/platform-backup/postgresql:0.5.1-pg17
+
+services:
+  backup:
+    image: *image
+    env_file: .env
+    volumes:
+      # Persistent, so .last-run.json survives restarts: the HEALTHCHECK and
+      # NOTIFY_ON=change both read it.
+      - backup:/backup
+    extra_hosts:
+      # Lets POSTGRES_HOST=host.docker.internal reach a server on this host.
+      - "host.docker.internal:host-gateway"
+    # A server in another Compose project: join its network instead, and use
+    # its service name as POSTGRES_HOST.
+    # networks: [db]
+    # SCHEDULE set: the container stays up and backs up on that cron; set
+    # RESTART_POLICY=unless-stopped too, so it survives a reboot. SCHEDULE
+    # empty: one backup, then it exits — keep the policy at "no", or the
+    # restart policy turns one backup into a loop.
+    restart: ${RESTART_POLICY:-no}
+
+  # Manual runs only. Kept apart from `backup` so a fetch or restore never
+  # writes the scheduled job's state file.
+  #   docker compose run --rm restore                                   # fetch
+  #   docker compose run --rm -e MODE=restore -e RESTORE_DROP=true restore
+  restore:
+    profiles: [manual]
+    image: *image
+    env_file: .env
+    environment:
+      MODE: fetch
+      SCHEDULE: ""
+      BACKUP_DIR: /tmp/backup
+      RESTORE_DIR: /restore
+      NOTIFY_ON: never
+    volumes:
+      - ./restore:/restore
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # networks: [db]
+    restart: "no"
+
+volumes:
+  backup:
+
+# networks:
+#   db:
+#     external: true
+#     name: <the server's network, from `docker network ls`>

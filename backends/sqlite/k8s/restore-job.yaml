@@ -28,7 +28,7 @@ spec:
       # attach wherever this pod lands.
       containers:
         - name: restore
-          image: ghcr.io/quyendv/platform-backup/sqlite:latest
+          image: ghcr.io/quyendv/platform-backup/sqlite:0.5.1
           # Root (the image's default), so the restored file gets the owner of
           # the one it replaces: the application usually runs under its own uid.
           securityContext:

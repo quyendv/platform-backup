@@ -2,7 +2,7 @@
 # End-to-end: seed a real target, back it up to a real MinIO, destroy the data,
 # restore it, and assert the data came back.
 #
-# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb redis vault sqlite schedule notify)
+# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb redis vault sqlite schedule notify upload_failure)
 #
 # etcd is not covered here: it needs a real etcd with TLS on the host network,
 # and its restore runs outside the container by design. See backends/etcd/README.md.
@@ -55,7 +55,7 @@ s3_ls() {
 # target's problems from blocking the tests that do not use it.
 services_for() {
   case "$1" in
-    postgresql | schedule) printf 'postgres' ;;
+    postgresql | schedule | upload_failure) printf 'postgres' ;;
     notify) printf 'postgres notifysink' ;;
     mongodb) printf 'mongo' ;;
     redis) printf 'redis' ;;
@@ -123,6 +123,26 @@ test_postgresql() {
   info "postgresql: fetch"
   backup_image "$image" fetch "$prefix" "${env[@]}" >/dev/null
   pass "postgresql: fetch verified the checksum"
+}
+
+# A backup whose upload fails must fail. Until 0.5.x it logged "Uploaded run"
+# and "complete", recorded success and exited 0: the run executed with errexit
+# switched off, so nothing it did not check by hand could fail it. A unit test
+# stubs aws; this one proves the real CLI's exit status reaches the run.
+test_upload_failure() {
+  local image=ghcr.io/quyendv/platform-backup/postgresql:pg17 out rc=0
+  info "upload_failure: backup against an endpoint that refuses connections"
+  out="$(backup_image "$image" backup it/upload-failure \
+    -e POSTGRES_HOST=postgres -e POSTGRES_PORT=5432 -e POSTGRES_USER=postgres \
+    -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=appdb \
+    -e AWS_ENDPOINT_URL_S3=http://minio:9999 2>&1)" || rc=$?
+
+  ((rc != 0)) || fail "upload_failure: backup exited 0 with no reachable S3"
+  [[ "$out" != *"Uploaded run"* && "$out" != *"complete"* ]] ||
+    fail "upload_failure: the run reported an upload that never happened"
+  [[ "$out" == *"Upload of run"*"failed"* ]] ||
+    fail "upload_failure: the failure did not name the upload"
+  pass "upload_failure: a failed upload fails the run (exit ${rc}) and says so"
 }
 
 mongo_eval() {
@@ -555,7 +575,7 @@ test_sqlite() {
 
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb redis vault sqlite schedule notify)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb redis vault sqlite schedule notify upload_failure)
 
   start_stack "${backends[@]}"
   local b
