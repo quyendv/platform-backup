@@ -79,6 +79,44 @@ On kubeadm, stop etcd by moving `/etc/kubernetes/manifests/etcd.yaml` aside;
 put it back once every member's data directory has been rebuilt. Set
 `RESTORE_TIMESTAMP` on the fetch to pin a specific run.
 
+## Docker
+
+[`docker/compose.yaml`](docker/compose.yaml) runs the image on a schedule, with
+a pinned release tag and a persistent `/backup` volume.
+
+```bash
+cd backends/etcd/docker
+cp ../.env.example .env        # ETCD_MODE, the S3 settings, SCHEDULE
+docker compose up -d
+docker compose run --rm backup run   # one backup now, against the same volume
+docker compose ps                    # (healthy) once a run has succeeded
+docker compose logs -f backup
+```
+
+The service runs with host networking, because etcd listens on the host, and
+mounts the kubeadm client certificates read-only. For kubespray, swap the
+mounts for the commented ones and set `ETCD_MODE=kubespray`. Run it on one
+control-plane node: a snapshot from one member is a snapshot of the cluster.
+
+Restore and fetch:
+
+```bash
+docker compose run --rm restore        # download + verify into ./restore
+# then follow "Restore" above on each control-plane node
+```
+
+The image never restores, as explained under [Restore](#restore).
+
+An empty `SCHEDULE` becomes `0 2 * * *` (daily, 02:00 UTC) in the `backup`
+service: without one the container would back up once, exit, and be restarted
+by its restart policy — a backup loop.
+
+The `/backup` volume is persistent, so `.last-run.json` survives restarts:
+`docker ps` shows `(unhealthy)` once a run fails, and `NOTIFY_ON=change` works
+here, unlike in Kubernetes. Set `HEALTHCHECK_MAX_AGE` as well to catch a
+schedule that stopped firing. `restore` is a separate service so that a manual
+fetch or restore never overwrites the scheduled job's state.
+
 ## Kubernetes
 
 [`k8s/`](k8s/) has a CronJob pinned to a

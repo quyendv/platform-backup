@@ -1,0 +1,63 @@
+# Scheduled SQLite backups on a Docker host. ../README.md, section "Docker", has
+# the walkthrough.
+#
+#   cp ../.env.example .env                  # fill in SQLITE_PATH, S3, SCHEDULE
+#   echo SQLITE_VOLUME=<app volume> >> .env  # read by Compose only
+#   docker compose up -d                     # scheduled backups
+#   docker compose run --rm backup run       # one backup now, same volume
+#   docker compose run --rm restore          # fetch + verify the newest run
+#
+# The database is a file, so this container mounts the application's own data
+# volume, read-write: see ../README.md for why read-only is worse.
+
+name: platform-backup-sqlite
+
+x-image: &image ghcr.io/quyendv/platform-backup/sqlite:0.5.0
+
+x-sqlite: &sqlite
+  image: *image
+  env_file: .env
+  # Root, as the image runs, with only the capabilities it needs.
+  cap_drop: [ALL]
+  cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+
+services:
+  backup:
+    <<: *sqlite
+    environment:
+      # Never empty here: without a schedule the container runs once, exits,
+      # and the restart policy starts it again — a backup loop.
+      SCHEDULE: "${SCHEDULE:-0 2 * * *}"
+    volumes:
+      # Persistent, so .last-run.json survives restarts: the HEALTHCHECK and
+      # NOTIFY_ON=change both read it.
+      - backup:/backup
+      # The application's data, at the directory SQLITE_PATH points into.
+      - app-data:/data
+    restart: ${RESTART_POLICY:-unless-stopped}
+
+  # Manual runs only. Kept apart from `backup` so a fetch or restore never
+  # writes the scheduled job's state file.
+  #   docker compose run --rm restore                       # fetch
+  #   docker compose run --rm -e MODE=restore restore       # STOP THE APPLICATION FIRST
+  restore:
+    <<: *sqlite
+    profiles: [manual]
+    environment:
+      MODE: fetch
+      SCHEDULE: ""
+      BACKUP_DIR: /tmp/backup
+      RESTORE_DIR: /restore
+      NOTIFY_ON: never
+    volumes:
+      - app-data:/data
+      - ./restore:/restore
+    restart: "no"
+
+volumes:
+  backup:
+  # The application's existing volume. For a bind mount, replace `app-data:/data`
+  # above with `/srv/app/data:/data` and delete this entry.
+  app-data:
+    external: true
+    name: ${SQLITE_VOLUME:?set SQLITE_VOLUME in .env to the application's volume}

@@ -1,0 +1,99 @@
+# Scheduled Vault backups on a Docker host, with a token that never expires
+# unnoticed. ../README.md walks through the Vault side.
+#
+#   cp ../.env.example .env                 # fill in VAULT_ADDR, S3, SCHEDULE
+#   mkdir -p secrets                        # role-id and secret-id go here
+#   docker compose up -d                    # agent + scheduled backup
+#   docker compose run --rm backup run      # one backup now, same volume
+#   docker compose run --rm restore         # fetch + verify the newest run
+#
+# vault-agent logs in with AppRole, renews the token, and logs in again by itself
+# when the token reaches its max TTL or Vault was sealed in between. backup reads
+# the token from a file at the start of every run, so it always gets the current
+# one. A static VAULT_TOKEN would instead work until its TTL or period ran out,
+# then fail every run: neither the image nor Vault renews it on its own.
+
+name: platform-backup-vault
+
+x-image: &image ghcr.io/quyendv/platform-backup/vault:0.5.0
+
+services:
+  vault-agent:
+    # Any recent agent works against any recent server; matching the server's
+    # version is the conservative choice.
+    image: hashicorp/vault:1.18
+    command: ["agent", "-config=/vault/config/agent.hcl"]
+    environment:
+      # Read from .env by Compose itself; the agent never sees the S3 keys.
+      VAULT_ADDR: ${VAULT_ADDR:?set VAULT_ADDR in .env}
+      # Agent needs no mlock, and setcap fails as the image's non-root user.
+      SKIP_SETCAP: "true"
+    volumes:
+      - ./agent.hcl:/vault/config/agent.hcl:ro
+      - ./secrets:/vault/approle:ro
+      - token:/vault/token
+    extra_hosts:
+      # Lets VAULT_ADDR=http://host.docker.internal:8200 reach a Vault on this host.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "test", "-s", "/vault/token/token"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  backup:
+    image: *image
+    env_file: .env
+    environment:
+      # Never empty here: without a schedule the container runs once, exits,
+      # and the restart policy starts it again — a backup loop.
+      SCHEDULE: "${SCHEDULE:-0 2 * * *}"
+      VAULT_TOKEN_FILE: /vault/token/token
+      # Forced empty: a VAULT_TOKEN left in .env would win over the file.
+      VAULT_TOKEN: ""
+    volumes:
+      # Persistent, so .last-run.json survives restarts: the HEALTHCHECK and
+      # NOTIFY_ON=change both read it.
+      - backup:/backup
+      - token:/vault/token:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      vault-agent:
+        condition: service_healthy
+    restart: ${RESTART_POLICY:-unless-stopped}
+
+  # Manual runs only. Kept apart from `backup` so a fetch or restore never
+  # writes the scheduled job's state file.
+  #   docker compose run --rm restore                                        # fetch
+  #   docker compose run --rm -e MODE=restore -e VAULT_TOKEN=<privileged> restore
+  # The image wants a token even to fetch, so the agent's is mounted; it can
+  # only take snapshots. A restore needs its own privileged token, passed by
+  # hand as above, which wins over the file.
+  restore:
+    profiles: [manual]
+    image: *image
+    env_file: .env
+    environment:
+      MODE: fetch
+      SCHEDULE: ""
+      BACKUP_DIR: /tmp/backup
+      RESTORE_DIR: /restore
+      NOTIFY_ON: never
+      VAULT_TOKEN_FILE: /vault/token/token
+    volumes:
+      - ./restore:/restore
+      - token:/vault/token:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+
+volumes:
+  backup:
+  # The token lives in memory only, owned by the uid both images run as.
+  token:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=100,gid=1000,mode=0750"

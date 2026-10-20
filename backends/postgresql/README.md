@@ -48,6 +48,46 @@ something outside the dump depends on the database object surviving.
 Restoring into a database that is neither dropped nor cleaned will produce
 "already exists" errors from `pg_restore`.
 
+## Docker
+
+[`docker/compose.yaml`](docker/compose.yaml) runs the image on a schedule, with
+a pinned release tag and a persistent `/backup` volume.
+
+```bash
+cd backends/postgresql/docker
+cp ../.env.example .env        # POSTGRES_*, the S3 settings, SCHEDULE
+docker compose up -d
+docker compose run --rm backup run   # one backup now, against the same volume
+docker compose ps                    # (healthy) once a run has succeeded
+docker compose logs -f backup
+```
+
+**Reaching the server.** For a server on the same host with a published port,
+use `host.docker.internal` as the host: the compose file maps it to the host.
+For a server in another Compose project, uncomment `networks:` in the compose
+file, set the name to that project's network (`docker network ls`) and use the
+server's service name as the host.
+
+Restore and fetch:
+
+```bash
+docker compose run --rm restore        # download + verify into ./restore
+docker compose run --rm -e MODE=restore -e RESTORE_DROP=true restore
+```
+
+Pick the image tag to match the server's major version (`0.5.0-pg14` …
+`0.5.0-pg17`), as described under [Choosing a tag](#choosing-a-tag).
+
+An empty `SCHEDULE` becomes `0 2 * * *` (daily, 02:00 UTC) in the `backup`
+service: without one the container would back up once, exit, and be restarted
+by its restart policy — a backup loop.
+
+The `/backup` volume is persistent, so `.last-run.json` survives restarts:
+`docker ps` shows `(unhealthy)` once a run fails, and `NOTIFY_ON=change` works
+here, unlike in Kubernetes. Set `HEALTHCHECK_MAX_AGE` as well to catch a
+schedule that stopped firing. `restore` is a separate service so that a manual
+fetch or restore never overwrites the scheduled job's state.
+
 ## Kubernetes
 
 [`k8s/`](k8s/) has a CronJob and a one-shot restore Job that reuses its

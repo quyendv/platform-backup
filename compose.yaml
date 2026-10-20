@@ -1,4 +1,6 @@
-# One service per backend, behind profiles so they never start together.
+# Development: builds every image from this checkout, one service per backend,
+# behind profiles so they never start together. To run a released image on a
+# host, use backends/<name>/docker/compose.yaml instead.
 #
 #   cp backends/postgresql/.env.example backends/postgresql/.env
 #   docker compose --profile postgresql run --rm postgresql   # one-shot
