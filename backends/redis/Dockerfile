@@ -13,6 +13,9 @@ ARG SUPERCRONIC_VERSION=0.2.34
 FROM redis:${REDIS_VERSION}-alpine
 ARG TARGETARCH
 ARG SUPERCRONIC_VERSION
+# Recorded in every run's _COMPLETE marker, so a backup says what wrote it.
+ARG VERSION=dev
+ENV PLATFORM_BACKUP_VERSION=${VERSION}
 LABEL org.opencontainers.image.title="platform-backup/redis" \
   org.opencontainers.image.description="Redis RDB backup to S3-compatible storage" \
   org.opencontainers.image.source="https://github.com/quyendv/platform-backup"

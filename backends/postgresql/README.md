@@ -23,6 +23,8 @@ newest.
 | `POSTGRES_MAINTENANCE_DB` | | `postgres` | Connected to when dropping and recreating `POSTGRES_DB` |
 | `RESTORE_DROP` | | `false` | Terminate connections, `DROP DATABASE`, `CREATE DATABASE` before restoring |
 | `RESTORE_CLEAN` | | `false` | Pass `--clean --if-exists` to `pg_restore` |
+| `POSTGRES_DUMP_GLOBALS` | | `true` | Also write `pg_dumpall --globals-only` (roles, memberships, tablespaces) as `globals-<run>.sql.gz`. Without superuser rights it adds `--no-role-passwords` |
+| `RESTORE_GLOBALS` | | `false` | Apply the run's globals before restoring. For a fresh server: on a live one it would overwrite roles changed since the backup |
 
 Plus the [shared variables](../../README.md#environment).
 
@@ -75,8 +77,8 @@ docker compose run --rm restore        # download + verify into ./restore
 docker compose run --rm -e MODE=restore -e RESTORE_DROP=true restore
 ```
 
-Pick the image tag to match the server's major version (`0.5.1-pg14` …
-`0.5.1-pg17`), as described under [Choosing a tag](#choosing-a-tag).
+Pick the image tag to match the server's major version (`0.6.0-pg14` …
+`0.6.0-pg17`), as described under [Choosing a tag](#choosing-a-tag).
 
 With `SCHEDULE` set, `docker compose up -d` leaves the container running and
 backing up on that cron; add `RESTART_POLICY=unless-stopped` to `.env` so it

@@ -42,6 +42,23 @@ services:
       timeout: 5s
       retries: 30
 
+  # A one-member replica set, so the dump can take an oplog. No auth: what is
+  # under test is --oplog and --oplogReplay, not credentials. The member is
+  # named by its service, so a client in another container can reach it.
+  mongors:
+    image: mongo:8.0.12
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - "try { rs.status().ok } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongors:27017'}]}).ok }; db.hello().isWritablePrimary || quit(1)"
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   # Raft storage, not `vault server -dev`: dev mode uses in-memory storage and
   # has no raft snapshots to take.
   vault:

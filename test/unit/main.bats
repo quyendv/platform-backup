@@ -224,7 +224,7 @@ STUB
 # value _fetch_into returns.
 
 @test "fetch downloads the newest run and reports the real artifact path" {
-  stub_aws_stdout "                           PRE 20260101_000000/"
+  stub_aws_keys backups/fake/20260101_000000/fake.dump
   # The stub cannot copy files, so stage what the download would have produced.
   mkdir -p "$RESTORE_DIR/20260101_000000"
   printf 'payload' >"$RESTORE_DIR/20260101_000000/fake.dump"
@@ -238,7 +238,7 @@ STUB
 }
 
 @test "restore hands the backend a bare artifact path, not log output" {
-  stub_aws_stdout "                           PRE 20260101_000000/"
+  stub_aws_keys backups/fake/20260101_000000/fake.dump
   mkdir -p "$RESTORE_DIR/20260101_000000"
   printf 'payload' >"$RESTORE_DIR/20260101_000000/fake.dump"
   (cd "$RESTORE_DIR/20260101_000000" && sha256sum fake.dump >fake.dump.sha256)
@@ -328,7 +328,7 @@ STUB
   # Choosing "the first file that is not a .sha256" depends on readdir order,
   # which differs between machines: this passed locally and picked a padding
   # file on CI.
-  stub_aws_stdout "                           PRE 20260101_000000/"
+  stub_aws_keys backups/fake/20260101_000000/fake.dump
   mkdir -p "$RESTORE_DIR/20260101_000000"
   local i
   for i in $(seq 1 200); do : >"$RESTORE_DIR/20260101_000000/pad-$i.bin"; done
@@ -344,7 +344,7 @@ STUB
 
 @test "fetch refuses a run whose artifact is missing" {
   # Half an upload: checksum there, artifact not.
-  stub_aws_stdout "                           PRE 20260101_000000/"
+  stub_aws_keys backups/fake/20260101_000000/fake.dump
   mkdir -p "$RESTORE_DIR/20260101_000000"
   printf 'deadbeef  real.dump\n' >"$RESTORE_DIR/20260101_000000/real.dump.sha256"
 
@@ -436,7 +436,7 @@ STUB
 }
 
 @test "state is recorded for fetch and restore too, not just backup" {
-  stub_aws_stdout "                           PRE 20260101_000000/"
+  stub_aws_keys backups/fake/20260101_000000/fake.dump
   mkdir -p "$RESTORE_DIR/20260101_000000"
   printf 'payload' >"$RESTORE_DIR/20260101_000000/fake.dump"
   (cd "$RESTORE_DIR/20260101_000000" && sha256sum fake.dump >fake.dump.sha256)
@@ -460,7 +460,7 @@ STUB
 # live server. That path needs the file uncompressed and ready to move.
 
 stage_fetchable() {
-  stub_aws_stdout "                           PRE 20260101_000000/"
+  stub_aws_keys backups/fake/20260101_000000/fake.dump
   mkdir -p "$RESTORE_DIR/20260101_000000"
   printf 'payload-for-offline-restore' | gzip -c >"$RESTORE_DIR/20260101_000000/real.rdb.gz"
   (cd "$RESTORE_DIR/20260101_000000" && sha256sum real.rdb.gz >real.rdb.gz.sha256)
@@ -487,7 +487,7 @@ stage_fetchable() {
 @test "FETCH_DECOMPRESS unpacks a zstd artifact too" {
   # Redis artifacts are zstd from 0.5 on. A fetch that only knew .gz would
   # hand the offline restore a compressed file to place as dump.rdb.
-  stub_aws_stdout "                           PRE 20260101_000000/"
+  stub_aws_keys backups/fake/20260101_000000/fake.dump
   mkdir -p "$RESTORE_DIR/20260101_000000"
   printf 'payload-for-offline-restore' | zstd -q -c >"$RESTORE_DIR/20260101_000000/real.rdb.zst"
   (cd "$RESTORE_DIR/20260101_000000" && sha256sum real.rdb.zst >real.rdb.zst.sha256)
@@ -526,7 +526,7 @@ stage_fetchable() {
 
 @test "a non-gzip artifact is left alone rather than failing the fetch" {
   # etcd's snapshot is already a plain .db file.
-  stub_aws_stdout "                           PRE 20260101_000000/"
+  stub_aws_keys backups/fake/20260101_000000/fake.dump
   mkdir -p "$RESTORE_DIR/20260101_000000"
   printf 'plain snapshot' >"$RESTORE_DIR/20260101_000000/snap.db"
   (cd "$RESTORE_DIR/20260101_000000" && sha256sum snap.db >snap.db.sha256)
@@ -535,4 +535,134 @@ stage_fetchable() {
 
   [ "$status" -eq 0 ]
   [ -f "$RESTORE_DIR/20260101_000000/snap.db" ]
+}
+
+# --- completion marker ---------------------------------------------------------
+
+@test "backup writes a _COMPLETE marker naming the artifact and the host" {
+  BACKUP_HOST=cluster-a MODE=backup main
+
+  local marker
+  marker="$(find "$BACKUP_DIR" -name _COMPLETE -print -quit)"
+  [ -n "$marker" ]
+  run jq -r '.artifact, .host, .backend, .readback' "$marker"
+  [[ "${lines[0]}" == fake-*.dump ]]
+  [ "${lines[1]}" = "cluster-a" ]
+  [ "${lines[2]}" = "fake" ]
+  [ "${lines[3]}" = "false" ]
+}
+
+@test "backup uploads _COMPLETE after the artifacts" {
+  MODE=backup S3_BUCKET=my-bucket main
+
+  run grep -n 's3 cp' "$AWS_CALLS"
+  [[ "${lines[0]}" == *"--recursive"*"--exclude _COMPLETE"* ]]
+  [[ "${lines[1]}" == *"/_COMPLETE "* ]]
+}
+
+@test "a failed upload never uploads the marker" {
+  stub_aws_error 'upload failed: Connect timeout on endpoint URL'
+
+  MODE=backup S3_BUCKET=my-bucket run main
+
+  [ "$status" -ne 0 ]
+  run aws_calls
+  [[ "$output" != *"/_COMPLETE "* ]]
+}
+
+@test "backup with VERIFY_READBACK unset performs no read-back" {
+  MODE=backup S3_BUCKET=my-bucket main
+
+  run aws_calls
+  [[ "$output" != *" -"$'\n'* ]]
+  [[ "$output" != *"s3 cp s3://"* ]]
+}
+
+@test "backup with VERIFY_READBACK=true fails and writes no _COMPLETE on a hash mismatch" {
+  stub_fixed_run_id 20260101_000000
+  stub_aws_object fake-20260101_000000.dump 'not what was uploaded'
+
+  MODE=backup S3_BUCKET=my-bucket VERIFY_READBACK=true run main
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not match"* ]]
+  run aws_calls
+  [[ "$output" != *"/_COMPLETE "* ]]
+}
+
+@test "backup with VERIFY_READBACK=true succeeds when the objects match" {
+  stub_fixed_run_id 20260101_000000
+  stub_aws_object fake-20260101_000000.dump "$(head -c 2048 /dev/zero | tr '\0' 'x')"
+
+  MODE=backup S3_BUCKET=my-bucket VERIFY_READBACK=true run main
+
+  [ "$status" -eq 0 ]
+  run aws_calls
+  [[ "$output" == *"/_COMPLETE "* ]]
+}
+
+@test "a companion file gets its own checksum" {
+  backend_dump() {
+    head -c 2048 /dev/zero | tr '\0' 'x' >"$1/fake-${RUN_ID}.dump"
+    printf 'roles' >"$1/globals-${RUN_ID}.sql"
+    printf 'fake-%s.dump' "$RUN_ID"
+  }
+
+  MODE=backup main
+
+  [ "$(find "$BACKUP_DIR" -name 'globals-*.sql.sha256' | wc -l)" -eq 1 ]
+}
+
+stage_two_artifacts() {
+  stub_aws_keys backups/fake/20260101_000000/_COMPLETE
+  local run="$RESTORE_DIR/20260101_000000"
+  mkdir -p "$run"
+  printf 'roles' >"$run/aaa-globals.sql.gz"
+  printf 'payload' >"$run/fake-20260101_000000.dump"
+  (cd "$run" && sha256sum aaa-globals.sql.gz >aaa-globals.sql.gz.sha256 &&
+    sha256sum fake-20260101_000000.dump >fake-20260101_000000.dump.sha256)
+  printf '{"schema":1,"artifact":"fake-20260101_000000.dump"}' >"$run/_COMPLETE"
+}
+
+@test "fetch selects the artifact the marker names when a run holds two" {
+  stage_two_artifacts
+
+  MODE=fetch S3_BUCKET=my-bucket run main
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"available at $RESTORE_DIR/20260101_000000/fake-20260101_000000.dump"* ]]
+}
+
+@test "fetch fails when any checksum in the run does not match" {
+  stage_two_artifacts
+  printf 'corrupt' >"$RESTORE_DIR/20260101_000000/aaa-globals.sql.gz"
+
+  MODE=fetch S3_BUCKET=my-bucket run main
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"aaa-globals.sql.gz"* ]]
+}
+
+# --- reporting -----------------------------------------------------------------
+
+@test "notify receives the real duration" {
+  notify_run() { printf '%s' "${7:-unset}" >"$BATS_TEST_TMPDIR/duration"; }
+  backend_dump() {
+    sleep 1
+    head -c 2048 /dev/zero | tr '\0' 'x' >"$1/fake-${RUN_ID}.dump"
+    printf 'fake-%s.dump' "$RUN_ID"
+  }
+
+  MODE=backup main
+
+  run cat "$BATS_TEST_TMPDIR/duration"
+  [[ "$output" =~ ^[0-9]+$ ]]
+  [ "$output" -ge 1 ]
+}
+
+@test "the state record names the host" {
+  BACKUP_HOST=cluster-a MODE=backup main
+
+  run jq -r '.host' "$BACKUP_DIR/.last-run.json"
+  [ "$output" = "cluster-a" ]
 }

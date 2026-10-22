@@ -87,8 +87,9 @@ STUB
 }
 
 @test "s3_list_runs returns run ids from a prefix listing" {
-  stub_aws "                           PRE 20260305_020000/
-                           PRE 20260305_060000/"
+  stub_aws "2026-03-05 02:00:01       1024 backups/pg/20260305_020000/pg.dump.gz
+2026-03-05 02:00:01         80 backups/pg/20260305_020000/pg.dump.gz.sha256
+2026-03-05 06:00:01       1024 backups/pg/20260305_060000/pg.dump.gz"
 
   S3_BUCKET=b run s3_list_runs "backups/pg"
 
@@ -98,9 +99,10 @@ STUB
 }
 
 @test "s3_list_runs ignores objects that are not run folders" {
-  stub_aws "                           PRE latest/
-                           PRE 20260305_020000/
-2026-03-05 02:00:00       1024 stray-file.txt"
+  stub_aws "2026-03-05 02:00:00       1024 backups/pg/latest/pg.dump.gz
+2026-03-05 02:00:01       1024 backups/pg/20260305_020000/pg.dump.gz
+2026-03-05 02:00:00       1024 backups/pg/stray-file.txt
+2026-03-05 02:00:00       1024 backups/pgx/20260305_030000/pg.dump.gz"
 
   S3_BUCKET=b run s3_list_runs "backups/pg"
 

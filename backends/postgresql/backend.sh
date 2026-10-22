@@ -20,6 +20,39 @@ backend_validate() {
   require_env POSTGRES_HOST POSTGRES_PORT POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB
   export PGPASSWORD="$POSTGRES_PASSWORD"
   : "${POSTGRES_MAINTENANCE_DB:=postgres}"
+  : "${POSTGRES_DUMP_GLOBALS:=true}"
+  : "${RESTORE_GLOBALS:=false}"
+  bool_is_true POSTGRES_DUMP_GLOBALS || true
+  bool_is_true RESTORE_GLOBALS || true
+}
+
+# _is_superuser — only a superuser can read role passwords.
+_is_superuser() {
+  local args=() answer
+  mapfile -t args < <(_conn_args)
+  answer="$(psql "${args[@]}" --no-password -d "$POSTGRES_DB" -tAc \
+    'SELECT rolsuper FROM pg_roles WHERE rolname = current_user')" || return 1
+  [[ "$answer" == t ]]
+}
+
+# _dump_globals DIR — roles, memberships and tablespaces, which pg_dump never
+# carries. Without them a restore to a fresh server has the tables and none of
+# the roles that own or read them.
+_dump_globals() {
+  local dir="$1" name="globals-${RUN_ID}.sql.gz"
+  local args=() extra=()
+  mapfile -t args < <(_conn_args)
+  if ! _is_superuser; then
+    log_info "Not a superuser: globals are dumped without role passwords"
+    extra=(--no-role-passwords)
+  fi
+  # -l: connect to the database being backed up, which pg_hba already admits,
+  # rather than to "postgres", which it may not.
+  pg_dumpall "${args[@]}" --no-password -l "$POSTGRES_DB" --globals-only "${extra[@]}" |
+    gzip >"${dir}/${name}" ||
+    die "pg_dumpall --globals-only failed on ${POSTGRES_HOST}"
+  gzip -t "${dir}/${name}" || die "The globals dump is not a valid gzip stream"
+  log_ok "Globals ${name}"
 }
 
 backend_dump() {
@@ -40,6 +73,10 @@ backend_dump() {
   pg_dump "${args[@]}" --no-password -d "$POSTGRES_DB" --format=custom |
     gzip >"${dir}/${name}" ||
     die "pg_dump failed for ${POSTGRES_DB} on ${POSTGRES_HOST}"
+
+  if bool_is_true POSTGRES_DUMP_GLOBALS; then
+    _dump_globals "$dir"
+  fi
 
   printf '%s' "$name"
 }
@@ -66,6 +103,17 @@ SELECT pg_terminate_backend(pid) FROM pg_stat_activity
 DROP DATABASE IF EXISTS "${POSTGRES_DB}";
 CREATE DATABASE "${POSTGRES_DB}";
 SQL
+  fi
+
+  # Opt-in: on a live server the backed-up roles would overwrite any changed
+  # since. On a fresh one they are what the restored objects' grants need.
+  local globals
+  globals="$(dirname -- "$file")/globals-$(basename -- "$file" | sed -n 's/^postgresql-\([0-9_]*\)\..*/\1/p').sql.gz"
+  if bool_is_true RESTORE_GLOBALS; then
+    [[ -f "$globals" ]] || die "RESTORE_GLOBALS is set but the run has no $(basename -- "$globals")"
+    log_info "Applying $(basename -- "$globals"); roles that already exist are reported and kept"
+    gunzip -c "$globals" | psql "${args[@]}" -d "$POSTGRES_MAINTENANCE_DB" -q ||
+      die "Applying the globals failed"
   fi
 
   local restore_args=("${args[@]}" -d "$POSTGRES_DB")

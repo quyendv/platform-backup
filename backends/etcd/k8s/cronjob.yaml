@@ -86,7 +86,7 @@ spec:
               effect: NoSchedule
           containers:
             - name: backup
-              image: ghcr.io/quyendv/platform-backup/etcd:0.5.1
+              image: ghcr.io/quyendv/platform-backup/etcd:0.6.0
               imagePullPolicy: Always
               envFrom:
                 - secretRef:
