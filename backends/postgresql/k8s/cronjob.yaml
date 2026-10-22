@@ -81,7 +81,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: backup
-              image: ghcr.io/quyendv/platform-backup/postgresql:0.6.0-pg17
+              image: ghcr.io/quyendv/platform-backup/postgresql:0.6.1-pg17
               imagePullPolicy: Always
               envFrom:
                 - secretRef:

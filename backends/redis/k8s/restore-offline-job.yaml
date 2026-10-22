@@ -39,7 +39,7 @@ spec:
       securityContext: {fsGroup: 1001}
       initContainers:
         - name: fetch
-          image: ghcr.io/quyendv/platform-backup/redis:0.6.0-redis8
+          image: ghcr.io/quyendv/platform-backup/redis:0.6.1-redis8
           securityContext: {runAsUser: 1001}
           command: ["bash", "-euo", "pipefail", "-c"]
           args:
