@@ -83,10 +83,19 @@ backend_dump() {
 
 # pg_restore --list parses the archive's table of contents, so it fails on a
 # truncated or corrupt dump while accepting a valid dump of an empty database.
+#
+# It stops reading once it has the table of contents. The rest of the stream is
+# drained after it exits, or gunzip dies of SIGPIPE on any dump larger than a
+# pipe buffer and pipefail fails the run. gzip -t has already read every byte.
 backend_verify() {
   local file="$1"
   gzip -t "$file" || return 1
-  gunzip -c "$file" | pg_restore --list >/dev/null
+  gunzip -c "$file" | {
+    local rc=0
+    pg_restore --list >/dev/null || rc=$?
+    cat >/dev/null
+    return "$rc"
+  }
 }
 
 backend_restore() {
