@@ -333,3 +333,36 @@ STUB
   [ "$status" -ne 0 ]
   [[ "$output" == *"globals"* ]]
 }
+
+# pg_restore --list stops reading once it has the table of contents. For a dump
+# larger than a pipe buffer, gunzip was then killed by SIGPIPE and pipefail
+# failed the verification of every real-sized database (0.6.0, 2026-10-22).
+@test "postgresql verification passes when pg_restore stops reading early" {
+  source "$REPO_ROOT/backends/postgresql/backend.sh"
+  cat >"$STUB_BIN/pg_restore" <<'STUB'
+#!/usr/bin/env bash
+head -c 1024 >/dev/null
+exit 0
+STUB
+  chmod +x "$STUB_BIN/pg_restore"
+  head -c 8000000 /dev/urandom | gzip -1 >"$WORK/big.dump.gz"
+
+  run backend_verify "$WORK/big.dump.gz"
+
+  [ "$status" -eq 0 ]
+}
+
+@test "postgresql verification still fails when pg_restore rejects the archive" {
+  source "$REPO_ROOT/backends/postgresql/backend.sh"
+  cat >"$STUB_BIN/pg_restore" <<'STUB'
+#!/usr/bin/env bash
+head -c 1024 >/dev/null
+exit 1
+STUB
+  chmod +x "$STUB_BIN/pg_restore"
+  head -c 8000000 /dev/urandom | gzip -1 >"$WORK/big.dump.gz"
+
+  run backend_verify "$WORK/big.dump.gz"
+
+  [ "$status" -ne 0 ]
+}

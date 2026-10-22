@@ -101,6 +101,9 @@ test_postgresql() {
   info "postgresql: seeding"
   psql_target -c "CREATE TABLE widgets (id int primary key, name text);"
   psql_target -c "INSERT INTO widgets VALUES (1,'alpha'),(2,'beta'),(3,'gamma');"
+  # Bulk that does not compress, so the dump outgrows a pipe buffer: verifying
+  # a dump that size failed in 0.6.0 while every small fixture passed.
+  psql_target -c "CREATE TABLE bulk AS SELECT g AS id, md5(g::text) || md5((g * 7)::text) AS v FROM generate_series(1, 200000) g;"
 
   info "postgresql: backup"
   backup_image "$image" backup "$prefix" "${env[@]}" >/dev/null
@@ -109,7 +112,7 @@ test_postgresql() {
   pass "postgresql: backup uploaded a run folder"
 
   info "postgresql: destroying the data"
-  psql_target -c "DROP TABLE widgets;"
+  psql_target -c "DROP TABLE widgets; DROP TABLE bulk;"
 
   info "postgresql: restore"
   backup_image "$image" restore "$prefix" "${env[@]}" >/dev/null

@@ -8,11 +8,11 @@
 #   docker compose run --rm restore          # fetch + verify the newest run
 #
 # The tag must be at least the server's major version: RDB is not backward
-# compatible. 0.6.0-redis7 and 0.6.0-redis8 exist.
+# compatible. 0.6.1-redis7 and 0.6.1-redis8 exist.
 
 name: platform-backup-redis
 
-x-image: &image ghcr.io/quyendv/platform-backup/redis:0.6.0-redis8
+x-image: &image ghcr.io/quyendv/platform-backup/redis:0.6.1-redis8
 
 services:
   backup:

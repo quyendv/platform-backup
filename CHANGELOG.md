@@ -9,6 +9,20 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-10-22
+
+### Fixed
+
+- **postgresql: verification failed for every dump larger than a pipe
+  buffer.** `pg_restore --list` stops reading once it has the table of
+  contents, so `gunzip` died of SIGPIPE and pipefail failed the run with
+  "Artifact failed postgresql verification". Small databases passed, which is
+  why the fixtures never caught it. The rest of the stream is now drained;
+  `gzip -t` has already read every byte. The integration suite now backs up a
+  database larger than a pipe buffer. Present since the postgresql backend
+  first verified with `pg_restore --list`; 0.6.0 is the first release whose
+  users hit it at scale.
+
 ## [0.6.0] — 2026-10-22
 
 A run now counts only once it is wholly in the bucket, and two backends gain
