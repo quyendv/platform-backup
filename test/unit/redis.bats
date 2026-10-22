@@ -508,3 +508,29 @@ STUB
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+# The offline restore fetches an RDB to place into a server that is stopped or
+# not created yet. Requiring a reachable server for that defeated the mode
+# (restore drill, 2026-10-22).
+@test "fetch needs no reachable server: it only reads the object store" {
+  cat >"$STUB_BIN/redis-cli" <<'STUB'
+#!/usr/bin/env bash
+echo "Could not connect to Redis" >&2
+exit 1
+STUB
+  chmod +x "$STUB_BIN/redis-cli"
+  REDIS_STAGE_TIMEOUT=60 MODE=fetch REDIS_URL=redis://nowhere:6379 run backend_validate
+  [ "$status" -eq 0 ]
+}
+
+@test "a backup still refuses a server it cannot reach" {
+  cat >"$STUB_BIN/redis-cli" <<'STUB'
+#!/usr/bin/env bash
+echo "Could not connect to Redis" >&2
+exit 1
+STUB
+  chmod +x "$STUB_BIN/redis-cli"
+  REDIS_STAGE_TIMEOUT=60 MODE=backup REDIS_URL=redis://nowhere:6379 run backend_validate
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Cannot reach Redis"* ]]
+}

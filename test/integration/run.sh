@@ -125,6 +125,20 @@ test_postgresql() {
   [[ "$name" == "beta" ]] || fail "postgresql: expected 'beta', got '${name}'"
   pass "postgresql: data survived backup -> restore"
 
+  # A superuser's globals carry its own password. Restoring them with
+  # RESTORE_GLOBALS onto a server where that password differs must not lock the
+  # restore out: 0.6.1 applied it and pg_restore could no longer log in.
+  info "postgresql: restore with globals after the superuser's password changed"
+  psql_target -c "DROP TABLE widgets; DROP TABLE bulk; ALTER ROLE postgres PASSWORD 'changed';"
+  backup_image "$image" restore "$prefix" -e POSTGRES_HOST=postgres -e POSTGRES_PORT=5432 \
+    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=changed -e POSTGRES_DB=appdb \
+    -e RESTORE_GLOBALS=true >/dev/null ||
+    fail "postgresql: restore with globals failed once the superuser's password differed"
+  rows="$(psql_target -c "SELECT count(*) FROM widgets;")"
+  psql_target -c "ALTER ROLE postgres PASSWORD 'secret';"
+  [[ "$rows" == "3" ]] || fail "postgresql: expected 3 rows after the globals restore, got '${rows}'"
+  pass "postgresql: globals restored without touching the connecting role"
+
   info "postgresql: fetch"
   backup_image "$image" fetch "$prefix" "${env[@]}" >/dev/null
   pass "postgresql: fetch verified the checksum"
@@ -441,6 +455,15 @@ test_redis() {
     '/opt/platform-backup/entrypoint.sh >/dev/null 2>&1 && redis-check-rdb /restore/*/redis-*.rdb' \
     >/dev/null || fail "redis: FETCH_DECOMPRESS did not produce a parseable RDB from a .zst run"
   pass "redis: the artifact is zstd, and fetch unpacks it ready to place"
+
+  # The offline restore fetches for a server that is stopped or not created
+  # yet, so fetch must not need one: 0.6.1 refused with "Cannot reach Redis".
+  docker run --rm --network "$NETWORK" -e MODE=fetch -e FETCH_DECOMPRESS=true \
+    -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+    -e AWS_REGION=us-east-1 -e AWS_ENDPOINT_URL_S3=http://minio:9000 \
+    -e S3_BUCKET="$BUCKET" -e S3_PREFIX="$prefix" -e REDIS_URL=redis://nowhere:6379 \
+    "$image" >/dev/null 2>&1 || fail "redis: fetch needed a reachable server"
+  pass "redis: fetch works with no server to reach"
 
   test_redis_slow_load "$image" "$prefix-slow" "${env[@]}"
   redis_tooling ghcr.io/quyendv/platform-backup/redis:redis8

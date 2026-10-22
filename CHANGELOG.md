@@ -9,6 +9,31 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-10-22
+
+Both found by the first restore drill against a real deployment. Backups
+written by 0.6.x are fine; it is getting them back that failed.
+
+### Fixed
+
+- **Every download failed against some S3-compatible providers.** The images
+  ship AWS CLI 2.38, whose default sends checksum headers on every request; one
+  provider rejected each GetObject with "Value for x-amz-checksum-mode header is
+  invalid". Uploads kept working, so backups looked healthy while `fetch`,
+  `restore` and `VERIFY_READBACK` could not read a single object. The images
+  now default `AWS_REQUEST_CHECKSUM_CALCULATION` and
+  `AWS_RESPONSE_CHECKSUM_VALIDATION` to `when_required`; set either to override.
+- **postgresql: `RESTORE_GLOBALS` locked the restore out of the server.** A
+  superuser's globals carry its own `ALTER ROLE … PASSWORD`; applied first, it
+  reset the password of the role the restore was connected as, and
+  `pg_restore` then failed to log in. The connecting role's own `CREATE ROLE`
+  and `ALTER ROLE` lines are now skipped; every other role and membership is
+  applied.
+- **redis: `MODE=fetch` needed a reachable server.** Validation pinged
+  `REDIS_URL` in every mode, so the offline restore — fetching an RDB to place
+  into a server that is stopped or not created yet — failed with "Cannot reach
+  Redis". Fetch now only reads the object store, like sqlite's.
+
 ## [0.6.1] — 2026-10-22
 
 ### Fixed
