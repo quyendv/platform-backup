@@ -96,7 +96,7 @@ _notify_duration() {
 _notify_subject() {
   local outcome="$1" backend="$2"
   printf '[%s] %s backup on %s' \
-    "$(_notify_status_word "$outcome")" "$backend" "$(hostname)"
+    "$(_notify_status_word "$outcome")" "$backend" "${BACKUP_HOST:-$(hostname)}"
 }
 
 _notify_truncate() {
@@ -131,7 +131,7 @@ _notify_body() {
   local flavour="$1" header error fence='```'
 
   header="$(printf '%s %s \xe2\x80\xba %s \xe2\x80\x94 %s' \
-    "$(_notify_status_icon "$_N_OUTCOME")" "$(hostname)" \
+    "$(_notify_status_icon "$_N_OUTCOME")" "${BACKUP_HOST:-$(hostname)}" \
     "$_N_BACKEND" "$(_notify_status_word "$_N_OUTCOME")")"
 
   case "$flavour" in
@@ -211,7 +211,7 @@ _notify_webhook() {
     "$(jq -cn \
       --arg outcome "$_N_OUTCOME" --arg backend "$_N_BACKEND" \
       --arg run_id "$_N_RUN_ID" --arg error "$_N_ERROR" \
-      --arg target "$_N_TARGET" --arg host "$(hostname)" \
+      --arg target "$_N_TARGET" --arg host "${BACKUP_HOST:-$(hostname)}" \
       --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
       --argjson exit_code "${_N_EXIT:-0}" \
       --argjson duration_s "${_N_DURATION:-0}" \

@@ -11,6 +11,7 @@
 |---|:--:|---|---|
 | `MONGODB_URI` | ✅ | — | Carries host, credentials, replica set and TLS options |
 | `RESTORE_DROP` | | `false` | Pass `--drop` to `mongorestore` |
+| `MONGODUMP_OPLOG` | | `auto` | `--oplog`, for a dump consistent to one point in time. `auto` adds it when the URI names a replica set (`replicaSet=` or `mongodb+srv://`) and no database. The artifact is then `mongodb-<run>.oplog.archive.gz`, and restore replays it with `--oplogReplay` |
 
 Plus the [shared variables](../../README.md#environment).
 

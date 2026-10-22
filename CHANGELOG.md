@@ -9,6 +9,50 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-22
+
+A run now counts only once it is wholly in the bucket, and two backends gain
+what a restore to a fresh server needs. Upgrade in place: 0.5.x runs keep
+working, and history is never pruned below `KEEP_REMOTE` real backups.
+
+### Added
+
+- **A `_COMPLETE` marker, uploaded last by every run.** It is JSON naming the
+  run, backend, host, image version, the artifact and every file. `fetch` and
+  `restore` pick the newest run that has one; `KEEP_REMOTE` counts only those.
+  A run without a marker (an interrupted upload, or one written before 0.6.0)
+  is deleted once `KEEP_REMOTE` complete runs are newer than it, can still be
+  fetched by `RESTORE_TIMESTAMP`, and is used as the newest only where no run
+  has a marker yet.
+- **`VERIFY_READBACK`** (default `false`): after upload, stream every object
+  back and compare its SHA-256 before writing the marker. One download per run.
+- **`BACKUP_HOST`**: the name recorded in `.last-run.json` (new `host` field),
+  in `_COMPLETE` and in notifications. Defaults to the container's hostname.
+- **mongodb: `MONGODUMP_OPLOG=auto|true|false`** (default `auto`). On a
+  replica set — `replicaSet=` in the URI, or `mongodb+srv://` — and with no
+  database in the URI, the dump takes `--oplog` and is one point in time. Such
+  an artifact is named `mongodb-<run>.oplog.archive.gz`, and restore replays it
+  with `--oplogReplay`.
+- **postgresql: `POSTGRES_DUMP_GLOBALS`** (default `true`) also writes
+  `pg_dumpall --globals-only` to `globals-<run>.sql.gz`; without superuser
+  rights it adds `--no-role-passwords`. **`RESTORE_GLOBALS=true`** applies it
+  before the restore — for a fresh server, where roles and memberships are
+  otherwise missing.
+- `PLATFORM_BACKUP_VERSION` is baked into every image.
+
+### Changed
+
+- **Listing is recursive** (`aws s3 ls --recursive`), once per prune or
+  resolve, so completeness costs no request per run.
+- A backend may write companion files beside its artifact; each gets its own
+  `.sha256`, and `fetch` verifies every sidecar in the run.
+- Every manifest and compose file pins 0.6.0.
+
+### Fixed
+
+- **Notifications reported a duration of 0.** The duration was recorded in
+  `.last-run.json` but never passed to the notifier.
+
 ## [0.5.1] — 2026-10-20
 
 Every image gets one fix that matters: a backup whose upload failed was

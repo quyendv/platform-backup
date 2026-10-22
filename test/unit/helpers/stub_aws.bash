@@ -6,13 +6,19 @@ stub_aws_init() {
   AWS_CALLS="$BATS_TEST_TMPDIR/aws-calls"
   AWS_STDOUT="$BATS_TEST_TMPDIR/aws-stdout"
   AWS_STDERR="$BATS_TEST_TMPDIR/aws-stderr"
-  mkdir -p "$STUB_BIN"
+  AWS_OBJECTS="$BATS_TEST_TMPDIR/aws-objects"
+  mkdir -p "$STUB_BIN" "$AWS_OBJECTS"
   : >"$AWS_CALLS"
   : >"$AWS_STDOUT"
   : >"$AWS_STDERR"
   cat >"$STUB_BIN/aws" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$AWS_CALLS"
+# \`aws s3 cp s3://.../<name> -\` streams an object: serve it from AWS_OBJECTS.
+if [[ "\$1 \$2" == "s3 cp" && "\$3" == s3://* && "\${4:-}" == "-" ]]; then
+  cat "$AWS_OBJECTS/\${3##*/}" || exit 1
+  exit 0
+fi
 cat "$AWS_STDOUT"
 cat "$AWS_STDERR" >&2
 exit \${STUB_AWS_EXIT:-0}
@@ -51,4 +57,23 @@ done
 exec "$real" "\$@"
 STUB
   chmod +x "$STUB_BIN/date"
+}
+
+# ls_keys KEY... -> what `aws s3 ls --recursive` prints for these object keys.
+ls_keys() {
+  local key
+  for key in "$@"; do
+    printf '2026-01-01 00:00:00       2048 %s\n' "$key"
+  done
+}
+
+# stub_aws_keys KEY... — the bucket holds exactly these objects.
+stub_aws_keys() {
+  ls_keys "$@" >"$AWS_STDOUT"
+  export STUB_AWS_EXIT=0
+}
+
+# stub_aws_object NAME CONTENT — what streaming the object NAME returns.
+stub_aws_object() {
+  printf '%s' "$2" >"$AWS_OBJECTS/$1"
 }

@@ -35,12 +35,13 @@ state_write() {
     --arg backend "$backend" \
     --arg run_id "$run_id" \
     --arg error "$error" \
+    --arg host "${BACKUP_HOST:-$(hostname)}" \
     --arg finished_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --argjson exit_code "$exit_code" \
     --argjson duration_s "$duration" \
     '{schema: 1, outcome: $outcome, backend: $backend, run_id: $run_id,
       error: $error, exit_code: $exit_code, duration_s: $duration_s,
-      finished_at: $finished_at}' >"$tmp" 2>/dev/null &&
+      host: $host, finished_at: $finished_at}' >"$tmp" 2>/dev/null &&
     mv -- "$tmp" "$file"; then
     return 0
   fi

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 
 setup() {
   set -euo pipefail
@@ -33,9 +34,7 @@ setup() {
 # --- prune_remote ------------------------------------------------------------
 
 @test "prune_remote deletes only the runs beyond the keep count" {
-  stub_aws_stdout "                           PRE 20260101_000000/
-                           PRE 20260102_000000/
-                           PRE 20260103_000000/"
+  stub_aws_keys backups/pg/20260101_000000/x.dump backups/pg/20260101_000000/_COMPLETE backups/pg/20260102_000000/x.dump backups/pg/20260102_000000/_COMPLETE backups/pg/20260103_000000/x.dump backups/pg/20260103_000000/_COMPLETE
 
   prune_remote backups/pg 2
 
@@ -46,8 +45,7 @@ setup() {
 }
 
 @test "prune_remote deletes nothing when keep is zero" {
-  stub_aws_stdout "                           PRE 20260101_000000/
-                           PRE 20260102_000000/"
+  stub_aws_keys backups/pg/20260101_000000/x.dump backups/pg/20260101_000000/_COMPLETE backups/pg/20260102_000000/x.dump backups/pg/20260102_000000/_COMPLETE
 
   run prune_remote backups/pg 0
   [ "$status" -eq 0 ]
@@ -59,9 +57,7 @@ setup() {
 # --- s3_resolve_run ----------------------------------------------------------
 
 @test "s3_resolve_run picks the newest run when no timestamp is pinned" {
-  stub_aws_stdout "                           PRE 20260101_000000/
-                           PRE 20260303_120000/
-                           PRE 20260102_000000/"
+  stub_aws_keys backups/pg/20260101_000000/x.dump backups/pg/20260101_000000/_COMPLETE backups/pg/20260303_120000/x.dump backups/pg/20260303_120000/_COMPLETE backups/pg/20260102_000000/x.dump backups/pg/20260102_000000/_COMPLETE
 
   run s3_resolve_run backups/pg ""
 
@@ -70,8 +66,7 @@ setup() {
 }
 
 @test "s3_resolve_run honours a pinned timestamp that exists" {
-  stub_aws_stdout "                           PRE 20260101_000000/
-                           PRE 20260102_000000/"
+  stub_aws_keys backups/pg/20260101_000000/x.dump backups/pg/20260101_000000/_COMPLETE backups/pg/20260102_000000/x.dump backups/pg/20260102_000000/_COMPLETE
 
   run s3_resolve_run backups/pg 20260101_000000
 
@@ -80,7 +75,7 @@ setup() {
 }
 
 @test "s3_resolve_run fails when the pinned timestamp does not exist" {
-  stub_aws_stdout "                           PRE 20260102_000000/"
+  stub_aws_keys backups/pg/20260102_000000/x.dump backups/pg/20260102_000000/_COMPLETE
 
   run s3_resolve_run backups/pg 20260101_000000
 
@@ -174,4 +169,110 @@ setup() {
   run prune_remote "backups/pg" 1
 
   [ "$status" -ne 0 ]
+}
+
+# --- completion markers --------------------------------------------------------
+
+@test "s3_list_complete_runs lists only runs carrying the marker" {
+  stub_aws_keys backups/pg/20260101_000000/x.dump backups/pg/20260101_000000/_COMPLETE \
+    backups/pg/20260102_000000/x.dump
+
+  run s3_list_complete_runs backups/pg
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "20260101_000000" ]
+}
+
+@test "prune_remote counts only complete runs toward KEEP" {
+  stub_aws_keys backups/pg/20260101_000000/x.dump backups/pg/20260101_000000/_COMPLETE \
+    backups/pg/20260102_000000/x.dump backups/pg/20260102_000000/_COMPLETE \
+    backups/pg/20260103_000000/x.dump
+
+  prune_remote backups/pg 2
+
+  run aws_calls
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"s3 rm"* ]]
+}
+
+@test "s3_resolve_run picks the newest complete run, not the newest run" {
+  stub_aws_keys backups/pg/20260101_000000/x.dump backups/pg/20260101_000000/_COMPLETE \
+    backups/pg/20260102_000000/x.dump
+
+  run s3_resolve_run backups/pg ""
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "20260101_000000" ]
+}
+
+@test "s3_resolve_run accepts an explicit incomplete run and warns" {
+  stub_aws_keys backups/pg/20260101_000000/x.dump backups/pg/20260101_000000/_COMPLETE \
+    backups/pg/20260102_000000/x.dump
+
+  run --separate-stderr s3_resolve_run backups/pg 20260102_000000
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "20260102_000000" ]
+  [[ "$stderr" == *"_COMPLETE"* ]]
+}
+
+@test "s3_resolve_run falls back to the newest run when none has a marker" {
+  stub_aws_keys backups/pg/20260101_000000/x.dump backups/pg/20260102_000000/x.dump
+
+  run --separate-stderr s3_resolve_run backups/pg ""
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "20260102_000000" ]
+  [[ "$stderr" == *"predates"* ]]
+}
+
+@test "s3_upload_run leaves the marker for last" {
+  mkdir -p "$BATS_TEST_TMPDIR/run"
+  echo x >"$BATS_TEST_TMPDIR/run/pg.dump.gz"
+
+  s3_upload_run "$BATS_TEST_TMPDIR/run" backups/pg 20260101_000000
+
+  run aws_calls
+  [[ "$output" == *"--exclude _COMPLETE"* ]]
+}
+
+# --- read-back -----------------------------------------------------------------
+
+@test "s3_readback_run passes when every object matches its sidecar" {
+  local dir="$BATS_TEST_TMPDIR/run"
+  mkdir -p "$dir"
+  printf 'payload' >"$dir/pg.dump.gz"
+  (cd "$dir" && sha256sum pg.dump.gz >pg.dump.gz.sha256)
+  stub_aws_object pg.dump.gz payload
+
+  run s3_readback_run "$dir" backups/pg 20260101_000000
+
+  [ "$status" -eq 0 ]
+  run aws_calls
+  [[ "$output" == *"s3 cp s3://my-bucket/backups/pg/20260101_000000/pg.dump.gz -"* ]]
+}
+
+@test "s3_readback_run fails when an object differs from its sidecar" {
+  local dir="$BATS_TEST_TMPDIR/run"
+  mkdir -p "$dir"
+  printf 'payload' >"$dir/pg.dump.gz"
+  (cd "$dir" && sha256sum pg.dump.gz >pg.dump.gz.sha256)
+  stub_aws_object pg.dump.gz tampered
+
+  run s3_readback_run "$dir" backups/pg 20260101_000000
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not match"* ]]
+}
+
+@test "s3_readback_run fails when an object cannot be read" {
+  local dir="$BATS_TEST_TMPDIR/run"
+  mkdir -p "$dir"
+  printf 'payload' >"$dir/pg.dump.gz"
+  (cd "$dir" && sha256sum pg.dump.gz >pg.dump.gz.sha256)
+
+  run s3_readback_run "$dir" backups/pg 20260101_000000
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed"* ]]
 }

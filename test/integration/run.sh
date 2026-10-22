@@ -58,6 +58,8 @@ services_for() {
     postgresql | schedule | upload_failure) printf 'postgres' ;;
     notify) printf 'postgres notifysink' ;;
     mongodb) printf 'mongo' ;;
+    mongodb_oplog) printf 'mongors' ;;
+    postgresql_owner | completeness) printf 'postgres' ;;
     redis) printf 'redis' ;;
     vault) printf 'vault' ;;
   esac
@@ -123,6 +125,90 @@ test_postgresql() {
   info "postgresql: fetch"
   backup_image "$image" fetch "$prefix" "${env[@]}" >/dev/null
   pass "postgresql: fetch verified the checksum"
+
+  local listing
+  listing="$(s3_ls --recursive "s3://${BUCKET}/${prefix}/")"
+  [[ "$listing" == *"/_COMPLETE"* ]] || fail "postgresql: the run has no _COMPLETE marker"
+  [[ "$listing" == *"/globals-"*".sql.gz.sha256"* ]] ||
+    fail "postgresql: a superuser run wrote no checksummed globals"
+  pass "postgresql: the run carries its globals and a _COMPLETE marker"
+
+  info "postgresql: backup with read-back against the real store"
+  # Captured, not piped into grep -q: grep exiting on the first match would
+  # SIGPIPE the container under pipefail and read as a failure.
+  local out
+  out="$(backup_image "$image" backup "$prefix" "${env[@]}" -e VERIFY_READBACK=true 2>&1)" ||
+    fail "postgresql: backup with read-back failed: ${out}"
+  [[ "$out" == *"Read back postgresql-"* ]] || fail "postgresql: read-back did not read the artifact"
+  pass "postgresql: read-back streamed the objects back and matched"
+}
+
+# Most deployments back up as the application's owner, not a superuser, and
+# pg_dumpall cannot read role passwords without one. The globals must still be
+# written, and applying them on restore must not break it.
+test_postgresql_owner() {
+  local image=ghcr.io/quyendv/platform-backup/postgresql:pg17
+  local prefix=it/postgresql-owner
+  local env=(-e POSTGRES_HOST=postgres -e POSTGRES_PORT=5432
+    -e POSTGRES_USER=app_owner -e POSTGRES_PASSWORD=ownerpw -e POSTGRES_DB=ownerdb)
+
+  info "postgresql_owner: an owner role and its database"
+  psql_target -c "CREATE ROLE app_owner LOGIN PASSWORD 'ownerpw';"
+  psql_target -c "CREATE ROLE app_reader;"
+  psql_target -c "GRANT app_reader TO app_owner;"
+  psql_target -c "CREATE DATABASE ownerdb OWNER app_owner;"
+  "${COMPOSE[@]}" exec -T -e PGPASSWORD=ownerpw postgres \
+    psql -U app_owner -d ownerdb -v ON_ERROR_STOP=1 -q \
+    -c "CREATE TABLE gadgets (id int); INSERT INTO gadgets VALUES (1),(2);"
+
+  local out
+  out="$(backup_image "$image" backup "$prefix" "${env[@]}" 2>&1)" ||
+    fail "postgresql_owner: backup as a non-superuser failed: ${out}"
+  [[ "$out" == *"without role passwords"* ]] ||
+    fail "postgresql_owner: the globals were not dumped without passwords"
+  [[ "$(s3_ls --recursive "s3://${BUCKET}/${prefix}/")" == *"/globals-"* ]] ||
+    fail "postgresql_owner: no globals uploaded"
+  pass "postgresql_owner: a non-superuser backup writes its globals"
+
+  "${COMPOSE[@]}" exec -T -e PGPASSWORD=ownerpw postgres \
+    psql -U app_owner -d ownerdb -q -c "DROP TABLE gadgets;"
+  backup_image "$image" restore "$prefix" "${env[@]}" -e RESTORE_GLOBALS=true \
+    -e POSTGRES_MAINTENANCE_DB=ownerdb >/dev/null ||
+    fail "postgresql_owner: restore with RESTORE_GLOBALS failed"
+  local rows
+  rows="$("${COMPOSE[@]}" exec -T -e PGPASSWORD=ownerpw postgres \
+    psql -U app_owner -d ownerdb -tAq -c "SELECT count(*) FROM gadgets;")"
+  [[ "$rows" == "2" ]] || fail "postgresql_owner: expected 2 rows, got '${rows}'"
+  pass "postgresql_owner: restore applied the globals and the data"
+}
+
+# An upload that dies before its marker leaves objects that look like a run.
+# Restore must skip it and take the newest run that finished.
+test_completeness() {
+  local image=ghcr.io/quyendv/platform-backup/postgresql:pg17
+  local prefix=it/completeness
+  local env=(-e POSTGRES_HOST=postgres -e POSTGRES_PORT=5432
+    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=appdb)
+
+  backup_image "$image" backup "$prefix" "${env[@]}" >/dev/null
+  info "completeness: planting a newer run with no marker"
+  docker run --rm --network "$NETWORK" \
+    -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+    -e AWS_REGION=us-east-1 --entrypoint sh amazon/aws-cli:latest -c \
+    "echo junk > /tmp/a && aws --endpoint-url http://minio:9000 s3 cp /tmp/a \
+      s3://${BUCKET}/${prefix}/29991231_000000/postgresql-29991231_000000.dump.gz" >/dev/null
+
+  local out
+  out="$(backup_image "$image" fetch "$prefix" "${env[@]}" 2>&1)" ||
+    fail "completeness: fetch failed: ${out}"
+  [[ "$out" != *"29991231_000000"* ]] || fail "completeness: fetch chose the run with no marker"
+  pass "completeness: fetch skipped the unfinished run"
+
+  out="$(backup_image "$image" backup "$prefix" "${env[@]}" -e KEEP_REMOTE=1 2>&1)" ||
+    fail "completeness: second backup failed: ${out}"
+  s3_ls "s3://${BUCKET}/${prefix}/29991231_000000/" >/dev/null 2>&1 ||
+    fail "completeness: a run newer than every complete run was pruned"
+  pass "completeness: KEEP_REMOTE=1 kept the newest complete run and the unfinished one beside it"
 }
 
 # A backup whose upload fails must fail. Until 0.5.x it logged "Uploaded run"
@@ -175,6 +261,33 @@ test_mongodb() {
   count="$(mongo_eval 'db.widgets.countDocuments()' | tr -d '[:space:]')"
   [[ "$count" == "3" ]] || fail "mongodb: expected 3 documents after restore, got '${count}'"
   pass "mongodb: data survived backup -> restore"
+}
+
+# A replica-set member: the dump takes an oplog, so it is one point in time,
+# and restore replays it.
+test_mongodb_oplog() {
+  local image=ghcr.io/quyendv/platform-backup/mongodb:latest
+  local prefix=it/mongodb-oplog
+  local env=(-e MONGODB_URI="mongodb://mongors:27017/?replicaSet=rs0")
+
+  "${COMPOSE[@]}" exec -T mongors mongosh --quiet appdb \
+    --eval 'db.gizmos.insertMany([{_id:1},{_id:2},{_id:3},{_id:4}])' >/dev/null
+  backup_image "$image" backup "$prefix" "${env[@]}" >/dev/null ||
+    fail "mongodb_oplog: backup failed"
+  [[ "$(s3_ls --recursive "s3://${BUCKET}/${prefix}/")" == *".oplog.archive.gz"* ]] ||
+    fail "mongodb_oplog: the artifact carries no oplog"
+  pass "mongodb_oplog: a replica-set dump takes an oplog"
+
+  "${COMPOSE[@]}" exec -T mongors mongosh --quiet appdb --eval 'db.gizmos.drop()' >/dev/null
+  local out
+  out="$(backup_image "$image" restore "$prefix" "${env[@]}" -e RESTORE_DROP=true 2>&1)" ||
+    fail "mongodb_oplog: restore failed: ${out}"
+  [[ "$out" == *"replaying"* ]] || fail "mongodb_oplog: restore did not replay the oplog"
+  local count
+  count="$("${COMPOSE[@]}" exec -T mongors mongosh --quiet appdb \
+    --eval 'db.gizmos.countDocuments()' | tr -d '[:space:]')"
+  [[ "$count" == "4" ]] || fail "mongodb_oplog: expected 4 documents, got '${count}'"
+  pass "mongodb_oplog: restore replayed the oplog and the data is back"
 }
 
 # The scheduled path is a different code path from a one-shot run, and it is
@@ -575,7 +688,7 @@ test_sqlite() {
 
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql mongodb redis vault sqlite schedule notify upload_failure)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql postgresql_owner completeness mongodb mongodb_oplog redis vault sqlite schedule notify upload_failure)
 
   start_stack "${backends[@]}"
   local b
