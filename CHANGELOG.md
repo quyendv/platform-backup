@@ -9,6 +9,19 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-10-22
+
+### Fixed
+
+- **A failed download was reported as "no checksum".** The download runs
+  inside a command substitution, where errexit does not reach, so a permission
+  or network error carried on and the run failed two steps later blaming the
+  backup. It is now checked by name: "Download of run … failed", with the AWS
+  CLI's own error just above it. Found by a restore drill whose restore
+  directory the image could not write.
+- vault: `docker/compose.yaml` says to create `./restore` owned by uid 100
+  before a manual fetch; Docker creates it as root otherwise.
+
 ## [0.6.2] — 2026-10-22
 
 Both found by the first restore drill against a real deployment. Backups

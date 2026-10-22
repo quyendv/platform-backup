@@ -12,7 +12,7 @@
 
 name: platform-backup-sqlite
 
-x-image: &image ghcr.io/quyendv/platform-backup/sqlite:0.6.2
+x-image: &image ghcr.io/quyendv/platform-backup/sqlite:0.6.3
 
 x-sqlite: &sqlite
   image: *image

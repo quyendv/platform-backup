@@ -666,3 +666,37 @@ stage_two_artifacts() {
   run jq -r '.host' "$BACKUP_DIR/.last-run.json"
   [ "$output" = "cluster-a" ]
 }
+
+# _fetch_into runs inside $(...), where errexit does not reach. A failed
+# download used to carry on and report "no checksum", pointing at the backup
+# instead of at the permission or network error (restore drill, 2026-10-22).
+@test "a failed download is reported as a failed download" {
+  cat >"$STUB_BIN/aws" <<STUB
+#!/usr/bin/env bash
+if [[ "\$1 \$2" == "s3 ls" ]]; then
+  printf '%s\n' '2026-01-01 00:00:00 10 backups/fake/20260101_000000/fake.dump' \
+    '2026-01-01 00:00:00 10 backups/fake/20260101_000000/_COMPLETE'
+  exit 0
+fi
+echo "[Errno 13] Permission denied: '/restore/20260101_000000/'" >&2
+exit 1
+STUB
+  chmod +x "$STUB_BIN/aws"
+
+  MODE=fetch S3_BUCKET=my-bucket run main
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Download of run 20260101_000000"*"failed"* ]]
+  [[ "$output" != *"no checksum"* ]]
+}
+
+@test "a restore directory that cannot be created is reported" {
+  stub_aws_keys backups/fake/20260101_000000/fake.dump backups/fake/20260101_000000/_COMPLETE
+  mkdir -p "$BATS_TEST_TMPDIR/ro"
+  chmod 0555 "$BATS_TEST_TMPDIR/ro"
+
+  MODE=fetch S3_BUCKET=my-bucket RESTORE_DIR="$BATS_TEST_TMPDIR/ro/restore" run main
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Download of run 20260101_000000"*"failed"* ]]
+}
