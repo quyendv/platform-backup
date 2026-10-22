@@ -10,12 +10,12 @@ restore its own data.
 
 | Image | Release tags | Moving tags |
 |---|---|---|
-| `ghcr.io/quyendv/platform-backup/postgresql` | `0.5.1-pg14` … `0.5.1-pg17` | `pg14` `pg15` `pg16` `pg17` `latest` (= pg17) |
-| `ghcr.io/quyendv/platform-backup/mongodb` | `0.5.1` | `latest` |
-| `ghcr.io/quyendv/platform-backup/etcd` | `0.5.1` | `latest` |
-| `ghcr.io/quyendv/platform-backup/vault` | `0.5.1` | `latest` |
-| `ghcr.io/quyendv/platform-backup/redis` | `0.5.1-redis7` `0.5.1-redis8` | `redis7` `redis8` `latest` (= redis8) |
-| `ghcr.io/quyendv/platform-backup/sqlite` | `0.5.1` | `latest` |
+| `ghcr.io/quyendv/platform-backup/postgresql` | `0.6.0-pg14` … `0.6.0-pg17` | `pg14` `pg15` `pg16` `pg17` `latest` (= pg17) |
+| `ghcr.io/quyendv/platform-backup/mongodb` | `0.6.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/etcd` | `0.6.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/vault` | `0.6.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/redis` | `0.6.0-redis7` `0.6.0-redis8` | `redis7` `redis8` `latest` (= redis8) |
+| `ghcr.io/quyendv/platform-backup/sqlite` | `0.6.0` | `latest` |
 
 Release tags never move. Moving tags are rebuilt on every push to `main` and
 `develop`, so they can carry unreleased changes: pin a release tag for anything
@@ -146,6 +146,8 @@ an `~/.aws/config` containing `s3.addressing_style`.
 | `RESTORE_TIMESTAMP` | *(newest)* | Pin a run, `YYYYMMDD_HHMMSS` |
 | `FETCH_DECOMPRESS` | `false` | `fetch` also unpacks a `.gz` or `.zst` artifact, ready to place |
 | `DRY_RUN` | `false` | Log what would happen, change nothing |
+| `VERIFY_READBACK` | `false` | After upload, stream every object back and compare its SHA-256 before marking the run complete. Costs one download per run |
+| `BACKUP_HOST` | the container's hostname | Recorded in `.last-run.json`, `_COMPLETE` and notifications; set it to a cluster or host name that means something |
 | `MIN_ARTIFACT_BYTES` | `128` | Floor below which a dump is treated as failed |
 
 Backend-specific variables are documented on each backend's page.
@@ -162,7 +164,7 @@ in the log. Three things address that.
 ```json
 {"schema":1,"outcome":"failure","backend":"postgresql","run_id":"20260911_020000",
  "error":"pg_dump failed for appdb on db.internal","exit_code":1,
- "duration_s":3,"finished_at":"2026-09-11T02:00:03Z"}
+ "duration_s":3,"host":"db-host-1","finished_at":"2026-09-11T02:00:03Z"}
 ```
 
 **The image declares a `HEALTHCHECK`** that reads it, so a failing schedule
@@ -236,6 +238,14 @@ its checksum can never be separated. Anything under the prefix that is not
 shaped exactly `YYYYMMDD_HHMMSS` is invisible to pruning and will never be
 touched. `KEEP=0` disables pruning on that side — it never means "keep zero".
 
+**Only complete runs count.** Every run uploads a `_COMPLETE` marker as its
+last object, so a run without one is an upload that never finished. `fetch` and
+`restore` pick the newest complete run, and `KEEP_REMOTE` counts complete runs
+only. A run without a marker — an interrupted upload, or a run written before
+0.6.0 — is deleted once `KEEP_REMOTE` complete runs are newer than it, so
+upgrading in place never shrinks history. It can still be fetched by naming it
+in `RESTORE_TIMESTAMP`; where no run has a marker at all, the newest is used.
+
 One consequence worth knowing: the retention *window* is `KEEP_REMOTE ×
 SCHEDULE`. Moving from a four-hourly to an hourly schedule shortens how far
 back 30 runs reach, from five days to a little over one.
@@ -250,10 +260,18 @@ ${BACKUP_DIR}/20260305_020000/postgresql-20260305_020000.dump.gz
 
 s3://$S3_BUCKET/$S3_PREFIX/20260305_020000/postgresql-20260305_020000.dump.gz
                                            postgresql-20260305_020000.dump.gz.sha256
+                                           globals-20260305_020000.sql.gz
+                                           globals-20260305_020000.sql.gz.sha256
+                                           _COMPLETE
 ```
 
-Timestamps are UTC. Every artifact carries a SHA-256 sidecar, and `fetch` and
-`restore` verify it before doing anything with the data.
+`_COMPLETE` is JSON naming the run, the backend, the host, the image version,
+the artifact and every file of the run. A backend may write companions beside
+its artifact (postgresql's globals); each gets its own sidecar, and `fetch`
+verifies all of them.
+
+Timestamps are UTC. Every file carries a SHA-256 sidecar, and `fetch` and
+`restore` verify them all before doing anything with the data.
 
 Each backend also verifies its own artifact before the run is promoted —
 `pg_restore --list` for postgresql, `gzip -t` for mongodb and vault,

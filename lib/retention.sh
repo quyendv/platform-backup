@@ -5,6 +5,10 @@
 # to someone else and must never be touched.
 RUN_ID_PATTERN='^[0-9]{8}_[0-9]{6}$'
 
+# Uploaded last by every run, so its presence is what makes a run a backup.
+# shellcheck disable=SC2034 # read by s3.sh and main.sh
+COMPLETE_MARKER=_COMPLETE
+
 # prune_select KEEP  < candidate names on stdin, one per line
 # Writes the run ids that should be deleted to stdout, newest first.
 #
@@ -18,4 +22,35 @@ prune_select() {
     return 0
   fi
   { grep -E "$RUN_ID_PATTERN" || true; } | sort -r | tail -n "+$((keep + 1))"
+}
+
+# prune_select_runs KEEP  < "<run> complete|incomplete" lines on stdin
+# Writes the run ids to delete. Only complete runs count toward KEEP: an upload
+# that never finished must not evict a real backup. A run without a marker is
+# deleted only once KEEP complete runs are newer than it — that covers both a
+# failed upload and a run written before markers existed, and never shrinks
+# history below KEEP real backups.
+prune_select_runs() {
+  local keep="$1" lines run state kept=0 oldest=""
+  if [[ "$keep" -eq 0 ]]; then
+    cat >/dev/null
+    return 0
+  fi
+  lines="$({ grep -E '^[0-9]{8}_[0-9]{6} (complete|incomplete)$' || true; } | sort -r)"
+  while read -r run state; do
+    [[ "$state" == complete ]] || continue
+    if ((kept < keep)); then
+      kept=$((kept + 1))
+      oldest="$run"
+    else
+      printf '%s\n' "$run"
+    fi
+  done <<<"$lines"
+  ((kept == keep)) || return 0
+  while read -r run state; do
+    if [[ "$state" == incomplete && "$run" < "$oldest" ]]; then
+      printf '%s\n' "$run"
+    fi
+  done <<<"$lines"
+  return 0
 }

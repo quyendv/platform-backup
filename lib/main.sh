@@ -26,6 +26,9 @@ unset _m
 : "${S3_BUCKET:=}"
 : "${RESTORE_TIMESTAMP:=}"
 : "${FETCH_DECOMPRESS:=false}"
+: "${VERIFY_READBACK:=false}"
+: "${BACKUP_HOST:=$(hostname)}"
+: "${PLATFORM_BACKUP_VERSION:=dev}"
 
 backend_supports() {
   local want="$1"
@@ -36,6 +39,7 @@ _validate_common() {
   require_int KEEP_LOCAL
   require_int KEEP_REMOTE
   bool_is_true DRY_RUN || true
+  bool_is_true VERIFY_READBACK || true
   : "${S3_PREFIX:=backups/$(backend_name)}"
 }
 
@@ -121,6 +125,10 @@ do_backup() {
 
   write_checksum "$path" ||
     { _discard_staging "$staging" && die "Could not checksum ${artifact}"; }
+  # A backend may write companions beside the artifact (postgresql's globals).
+  # Each gets its own sidecar, so fetch can prove every file of the run.
+  _checksum_companions "$staging" "$artifact" ||
+    { _discard_staging "$staging" && die "Could not checksum the companions of ${artifact}"; }
 
   # Promotion. After this the run is a real backup; before it, nothing is.
   # Refuse rather than merge: mv into an existing directory would nest the
@@ -129,6 +137,8 @@ do_backup() {
   [[ ! -e "$run_dir" ]] ||
     { _discard_staging "$staging" && die "A run already exists at ${run_dir}"; }
   mv -- "$staging" "$run_dir"
+  _write_marker "$run_dir" "$artifact" ||
+    die "Could not write the ${COMPLETE_MARKER} marker of run ${RUN_ID}"
 
   if s3_enabled; then
     # Checked by name as well as by errexit: the AWS CLI's own message is not
@@ -136,6 +146,13 @@ do_backup() {
     # exit status. The local copy stays, so the run still counts there.
     s3_upload_run "$run_dir" "$S3_PREFIX" "$RUN_ID" ||
       die "Upload of run ${RUN_ID} to $(s3_uri "$S3_PREFIX" "$RUN_ID") failed"
+    if bool_is_true VERIFY_READBACK; then
+      s3_readback_run "$run_dir" "$S3_PREFIX" "$RUN_ID" ||
+        die "Read-back of run ${RUN_ID} from $(s3_uri "$S3_PREFIX" "$RUN_ID") failed"
+    fi
+    # Last, so that a run the bucket calls complete is one that got there whole.
+    s3_upload_marker "$run_dir" "$S3_PREFIX" "$RUN_ID" ||
+      die "Upload of the ${COMPLETE_MARKER} marker of run ${RUN_ID} failed"
     log_ok "Uploaded run ${RUN_ID}"
   else
     log_info "No S3_BUCKET configured — keeping this run locally only"
@@ -146,6 +163,33 @@ do_backup() {
     prune_remote "$S3_PREFIX" "$KEEP_REMOTE"
   fi
   log_ok "Backup run ${RUN_ID} complete"
+}
+
+# _checksum_companions DIR ARTIFACT — a sidecar for every other file the
+# backend wrote into the run.
+_checksum_companions() {
+  local dir="$1" artifact="$2" file
+  while IFS= read -r file; do
+    [[ "$(basename -- "$file")" == "$artifact" ]] && continue
+    write_checksum "$file" || return 1
+  done < <(find "$dir" -maxdepth 1 -type f ! -name '*.sha256' | sort)
+}
+
+# _write_marker RUN_DIR ARTIFACT — what makes a run a backup. It names the
+# artifact, so fetch never has to guess between two checksummed files.
+_write_marker() {
+  local dir="$1" artifact="$2"
+  find "$dir" -maxdepth 1 -type f ! -name "$COMPLETE_MARKER" -printf '%f\n' | sort |
+    jq -R . | jq -s \
+    --arg run_id "$RUN_ID" \
+    --arg backend "$(backend_name)" \
+    --arg host "$BACKUP_HOST" \
+    --arg version "$PLATFORM_BACKUP_VERSION" \
+    --arg artifact "$artifact" \
+    --argjson readback "$(bool_is_true VERIFY_READBACK && printf true || printf false)" \
+    '{schema: 1, run_id: $run_id, backend: $backend, host: $host,
+        version: $version, artifact: $artifact, files: ., readback: $readback}' \
+    >"${dir}/${COMPLETE_MARKER}"
 }
 
 # Downloads one run into DEST and verifies it. Echoes the artifact path.
@@ -165,14 +209,29 @@ _fetch_into() {
   #
   # -print -quit rather than a pipe into head: under pipefail, head closing
   # the pipe early kills find with SIGPIPE and the pipeline returns 141.
-  local sum
-  sum="$(find "${dest}/${run_id}" -maxdepth 1 -type f -name '*.sha256' -print -quit)"
-  [[ -n "$sum" ]] || die "Run ${run_id} has no checksum; it is not a complete backup"
-  file="${sum%.sha256}"
+  #
+  # A run with a marker names its artifact there; one without (written before
+  # markers existed) has exactly one checksummed file.
+  local sum marker="${dest}/${run_id}/${COMPLETE_MARKER}" name
+  if [[ -f "$marker" ]]; then
+    name="$(jq -r '.artifact // empty' "$marker")" ||
+      die "Run ${run_id} has an unreadable ${COMPLETE_MARKER} marker"
+    [[ -n "$name" && "$name" != */* ]] ||
+      die "Run ${run_id}'s ${COMPLETE_MARKER} marker names no artifact"
+    file="${dest}/${run_id}/${name}"
+  else
+    sum="$(find "${dest}/${run_id}" -maxdepth 1 -type f -name '*.sha256' -print -quit)"
+    [[ -n "$sum" ]] || die "Run ${run_id} has no checksum; it is not a complete backup"
+    file="${sum%.sha256}"
+  fi
   [[ -f "$file" ]] ||
     die "Run ${run_id} has a checksum but no artifact; the upload was incomplete"
-  verify_checksum "$file" || die "Checksum verification failed for ${file}"
-  log_ok "Verified $(basename "$file")"
+  # Every sidecar, not only the artifact's: a companion restored from a
+  # corrupt download is as bad as a corrupt artifact.
+  while IFS= read -r sum; do
+    verify_checksum "${sum%.sha256}" || die "Checksum verification failed for ${sum%.sha256}"
+    log_ok "Verified $(basename "${sum%.sha256}")"
+  done < <(find "${dest}/${run_id}" -maxdepth 1 -type f -name '*.sha256' | sort)
   printf '%s' "$file"
 }
 
@@ -223,7 +282,7 @@ do_restore() {
 # than scattering calls through it means there is exactly one place where a
 # run's result is decided, and no path that forgets to report.
 _run_and_report() {
-  local started previous rc=0 err_file error=""
+  local started previous rc=0 err_file error="" duration
   local RUN_ID_FILE
   started="$(date +%s)"
   previous="$(state_previous_outcome)"
@@ -262,11 +321,12 @@ _run_and_report() {
   fi
   rm -f -- "$err_file"
 
+  duration="$(($(date +%s) - started))"
   state_write "$( ((rc == 0)) && printf success || printf failure)" \
-    "$(backend_name)" "${RUN_ID:-}" "$error" "$rc" "$(($(date +%s) - started))"
+    "$(backend_name)" "${RUN_ID:-}" "$error" "$rc" "$duration"
 
   notify_run "$( ((rc == 0)) && printf success || printf failure)" \
-    "$(backend_name)" "${RUN_ID:-}" "$error" "$rc" "$previous"
+    "$(backend_name)" "${RUN_ID:-}" "$error" "$rc" "$previous" "$duration"
 
   return "$rc"
 }

@@ -17,6 +17,7 @@ target "_common" {
   platforms = split(",", PLATFORMS)
   args = {
     SUPERCRONIC_VERSION = SUPERCRONIC_VERSION
+    VERSION             = TAG
   }
 }
 

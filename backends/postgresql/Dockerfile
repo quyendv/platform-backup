@@ -32,6 +32,9 @@ RUN curl -fsSL -o /usr/local/bin/supercronic \
 
 FROM debian:bookworm-slim
 ARG PG_VERSION
+# Recorded in every run's _COMPLETE marker, so a backup says what wrote it.
+ARG VERSION=dev
+ENV PLATFORM_BACKUP_VERSION=${VERSION}
 LABEL org.opencontainers.image.title="platform-backup/postgresql" \
   org.opencontainers.image.description="PostgreSQL backup to S3-compatible storage" \
   org.opencontainers.image.source="https://github.com/quyendv/platform-backup"

@@ -23,7 +23,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: restore
-          image: ghcr.io/quyendv/platform-backup/vault:0.5.1
+          image: ghcr.io/quyendv/platform-backup/vault:0.6.0
           imagePullPolicy: IfNotPresent
           env:
             - name: MODE
