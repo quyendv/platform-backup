@@ -456,6 +456,15 @@ test_redis() {
     >/dev/null || fail "redis: FETCH_DECOMPRESS did not produce a parseable RDB from a .zst run"
   pass "redis: the artifact is zstd, and fetch unpacks it ready to place"
 
+  # The offline restore fetches for a server that is stopped or not created
+  # yet, so fetch must not need one: 0.6.1 refused with "Cannot reach Redis".
+  docker run --rm --network "$NETWORK" -e MODE=fetch -e FETCH_DECOMPRESS=true \
+    -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+    -e AWS_REGION=us-east-1 -e AWS_ENDPOINT_URL_S3=http://minio:9000 \
+    -e S3_BUCKET="$BUCKET" -e S3_PREFIX="$prefix" -e REDIS_URL=redis://nowhere:6379 \
+    "$image" >/dev/null 2>&1 || fail "redis: fetch needed a reachable server"
+  pass "redis: fetch works with no server to reach"
+
   test_redis_slow_load "$image" "$prefix-slow" "${env[@]}"
   redis_tooling ghcr.io/quyendv/platform-backup/redis:redis8
   redis_tooling ghcr.io/quyendv/platform-backup/redis:redis7
