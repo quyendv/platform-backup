@@ -15,7 +15,7 @@
 
 name: platform-backup-vault
 
-x-image: &image ghcr.io/quyendv/platform-backup/vault:0.6.2
+x-image: &image ghcr.io/quyendv/platform-backup/vault:0.6.3
 
 services:
   vault-agent:
@@ -72,6 +72,9 @@ services:
 
   # Manual runs only. Kept apart from `backup` so a fetch or restore never
   # writes the scheduled job's state file.
+  # The image runs as uid 100, and Docker creates a missing ./restore as root,
+  # which the fetch then cannot write. Create it first:
+  #   sudo install -d -o 100 -g 1000 restore
   #   docker compose run --rm restore                                        # fetch
   #   docker compose run --rm -e MODE=restore -e VAULT_TOKEN=<privileged> restore
   # The image wants a token even to fetch, so the agent's is mounted; it can

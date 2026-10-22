@@ -77,8 +77,8 @@ docker compose run --rm restore        # download + verify into ./restore
 docker compose run --rm -e MODE=restore -e RESTORE_DROP=true restore
 ```
 
-Pick the image tag to match the server's major version (`0.6.2-pg14` …
-`0.6.2-pg17`), as described under [Choosing a tag](#choosing-a-tag).
+Pick the image tag to match the server's major version (`0.6.3-pg14` …
+`0.6.3-pg17`), as described under [Choosing a tag](#choosing-a-tag).
 
 With `SCHEDULE` set, `docker compose up -d` leaves the container running and
 backing up on that cron; add `RESTART_POLICY=unless-stopped` to `.env` so it

@@ -198,7 +198,10 @@ _fetch_into() {
   run_id="$(s3_resolve_run "$S3_PREFIX" "$RESTORE_TIMESTAMP")" ||
     die "Cannot resolve a backup run to restore"
   log_info "Selected run ${run_id}"
-  s3_download_run "$S3_PREFIX" "$run_id" "${dest}/${run_id}"
+  # Checked by name: this runs inside $(...), where errexit does not reach, and
+  # an unchecked failure surfaced two steps later as "no checksum".
+  s3_download_run "$S3_PREFIX" "$run_id" "${dest}/${run_id}" ||
+    die "Download of run ${run_id} to ${dest}/${run_id} failed"
 
   # The checksum sidecar identifies the artifact. Picking "the first file that
   # is not a .sha256" depended on directory order, which is not guaranteed —

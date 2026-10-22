@@ -165,7 +165,7 @@ s3_readback_run() {
 s3_download_run() {
   local prefix="$1" run_id="$2" dest="$3" uri
   uri="$(s3_uri "$prefix" "$run_id")"
-  mkdir -p "$dest"
+  mkdir -p "$dest" || return 1
   log_info "Downloading ${uri} to ${dest}/"
   aws s3 cp "$uri" "$dest/" --recursive --no-progress >&2
 }
