@@ -18,7 +18,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: restore
-          image: ghcr.io/quyendv/platform-backup/postgresql:0.6.1-pg17
+          image: ghcr.io/quyendv/platform-backup/postgresql:0.6.2-pg17
           imagePullPolicy: Always
           env:
             - name: MODE

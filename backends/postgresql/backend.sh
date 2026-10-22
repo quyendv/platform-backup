@@ -98,6 +98,18 @@ backend_verify() {
   }
 }
 
+# _without_role NAME < globals — drops the CREATE ROLE and ALTER ROLE lines of
+# one role, whether pg_dumpall quoted its name or not. Memberships stay.
+_without_role() {
+  awk -v plain="$1" -v quoted="\"$1\"" '
+    ($1 == "CREATE" || $1 == "ALTER") && $2 == "ROLE" {
+      name = $3
+      sub(/;$/, "", name)
+      if (name == plain || name == quoted) next
+    }
+    { print }'
+}
+
 backend_restore() {
   local file="$1"
   local args=()
@@ -121,7 +133,11 @@ SQL
   if bool_is_true RESTORE_GLOBALS; then
     [[ -f "$globals" ]] || die "RESTORE_GLOBALS is set but the run has no $(basename -- "$globals")"
     log_info "Applying $(basename -- "$globals"); roles that already exist are reported and kept"
-    gunzip -c "$globals" | psql "${args[@]}" -d "$POSTGRES_MAINTENANCE_DB" -q ||
+    # Without the connecting role's own CREATE and ALTER ROLE: a superuser's
+    # globals carry its password, and applying it would lock this restore out
+    # of the server before pg_restore connects.
+    gunzip -c "$globals" | _without_role "$POSTGRES_USER" |
+      psql "${args[@]}" -d "$POSTGRES_MAINTENANCE_DB" -q ||
       die "Applying the globals failed"
   fi
 

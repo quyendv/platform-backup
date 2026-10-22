@@ -70,6 +70,11 @@ backend_validate() {
   require_int REDIS_STAGE_TIMEOUT
   ((REDIS_STAGE_TIMEOUT > 0)) || die "REDIS_STAGE_TIMEOUT must be at least 1 second"
 
+  # Fetch only reads the object store. Its use is the offline restore, an RDB
+  # placed into a server that is stopped or not created yet, so a reachable
+  # server is exactly what it cannot require.
+  [[ "${MODE:-backup}" == "fetch" ]] && return 0
+
   _redis ping 2>/dev/null | grep -q PONG ||
     die "Cannot reach Redis at $(_redis_url_part host):$(_redis_url_part port)"
 
