@@ -147,7 +147,7 @@ spec:
                   mountPath: /vault/token
           containers:
             - name: backup
-              image: ghcr.io/quyendv/platform-backup/vault:0.6.1
+              image: ghcr.io/quyendv/platform-backup/vault:0.6.2
               imagePullPolicy: IfNotPresent
               envFrom:
                 - secretRef:

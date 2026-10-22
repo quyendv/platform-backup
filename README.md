@@ -10,12 +10,12 @@ restore its own data.
 
 | Image | Release tags | Moving tags |
 |---|---|---|
-| `ghcr.io/quyendv/platform-backup/postgresql` | `0.6.1-pg14` … `0.6.1-pg17` | `pg14` `pg15` `pg16` `pg17` `latest` (= pg17) |
-| `ghcr.io/quyendv/platform-backup/mongodb` | `0.6.1` | `latest` |
-| `ghcr.io/quyendv/platform-backup/etcd` | `0.6.1` | `latest` |
-| `ghcr.io/quyendv/platform-backup/vault` | `0.6.1` | `latest` |
-| `ghcr.io/quyendv/platform-backup/redis` | `0.6.1-redis7` `0.6.1-redis8` | `redis7` `redis8` `latest` (= redis8) |
-| `ghcr.io/quyendv/platform-backup/sqlite` | `0.6.1` | `latest` |
+| `ghcr.io/quyendv/platform-backup/postgresql` | `0.6.2-pg14` … `0.6.2-pg17` | `pg14` `pg15` `pg16` `pg17` `latest` (= pg17) |
+| `ghcr.io/quyendv/platform-backup/mongodb` | `0.6.2` | `latest` |
+| `ghcr.io/quyendv/platform-backup/etcd` | `0.6.2` | `latest` |
+| `ghcr.io/quyendv/platform-backup/vault` | `0.6.2` | `latest` |
+| `ghcr.io/quyendv/platform-backup/redis` | `0.6.2-redis7` `0.6.2-redis8` | `redis7` `redis8` `latest` (= redis8) |
+| `ghcr.io/quyendv/platform-backup/sqlite` | `0.6.2` | `latest` |
 
 Release tags never move. Moving tags are rebuilt on every push to `main` and
 `develop`, so they can carry unreleased changes: pin a release tag for anything
@@ -124,6 +124,7 @@ account (IRSA).
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Omit entirely to use a role |
 | `AWS_REGION` | Default `us-east-1` |
 | `AWS_ENDPOINT_URL_S3` | Required for anything that is not real AWS |
+| `AWS_REQUEST_CHECKSUM_CALCULATION`, `AWS_RESPONSE_CHECKSUM_VALIDATION` | The images default both to `when_required`: the CLI's own default (`when_supported`) sends checksum headers some S3-compatible providers reject, which fails every download while uploads keep working. Set `when_supported` for real AWS if you want them |
 
 There is no addressing-style setting, and no `AWS_S3_ADDRESSING_STYLE`
 environment variable exists in the AWS CLI. None is needed: with a custom
@@ -242,7 +243,7 @@ touched. `KEEP=0` disables pruning on that side — it never means "keep zero".
 last object, so a run without one is an upload that never finished. `fetch` and
 `restore` pick the newest complete run, and `KEEP_REMOTE` counts complete runs
 only. A run without a marker — an interrupted upload, or a run written before
-0.6.1 — is deleted once `KEEP_REMOTE` complete runs are newer than it, so
+0.6.2 — is deleted once `KEEP_REMOTE` complete runs are newer than it, so
 upgrading in place never shrinks history. It can still be fetched by naming it
 in `RESTORE_TIMESTAMP`; where no run has a marker at all, the newest is used.
 

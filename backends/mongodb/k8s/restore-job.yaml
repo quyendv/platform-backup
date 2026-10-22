@@ -18,7 +18,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: restore
-          image: ghcr.io/quyendv/platform-backup/mongodb:0.6.1
+          image: ghcr.io/quyendv/platform-backup/mongodb:0.6.2
           imagePullPolicy: Always
           env:
             - name: MODE

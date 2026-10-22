@@ -366,3 +366,57 @@ STUB
 
   [ "$status" -ne 0 ]
 }
+
+# A superuser's globals carry ALTER ROLE <that user> ... PASSWORD. Applied on
+# restore, it reset the password of the role the restore was connected as, and
+# pg_restore could no longer log in (restore drill, 2026-10-22).
+@test "restore applies globals without touching the connecting role" {
+  source "$REPO_ROOT/backends/postgresql/backend.sh"
+  export POSTGRES_HOST=h POSTGRES_PORT=5432 POSTGRES_USER=postgres POSTGRES_PASSWORD=p POSTGRES_DB=d
+  backend_validate
+  stub_draining pg_restore
+  cat >"$STUB_BIN/psql" <<STUB
+#!/usr/bin/env bash
+cat >>"$BATS_TEST_TMPDIR/psql-stdin"
+STUB
+  chmod +x "$STUB_BIN/psql"
+  printf 'x' | gzip >"$WORK/postgresql-20260101_000000.dump.gz"
+  printf '%s\n' 'CREATE ROLE postgres;' \
+    "ALTER ROLE postgres WITH SUPERUSER LOGIN PASSWORD 'old';" \
+    'CREATE ROLE "app-owner";' \
+    "ALTER ROLE \"app-owner\" WITH LOGIN PASSWORD 'x';" \
+    'CREATE ROLE postgres_reader;' \
+    'GRANT postgres_reader TO "app-owner";' | gzip >"$WORK/globals-20260101_000000.sql.gz"
+
+  RESTORE_GLOBALS=true run backend_restore "$WORK/postgresql-20260101_000000.dump.gz"
+
+  [ "$status" -eq 0 ]
+  run cat "$BATS_TEST_TMPDIR/psql-stdin"
+  [[ "$output" != *"ROLE postgres;"* ]]
+  [[ "$output" != *"ROLE postgres WITH"* ]]
+  [[ "$output" == *'CREATE ROLE "app-owner";'* ]]
+  [[ "$output" == *'CREATE ROLE postgres_reader;'* ]]
+  [[ "$output" == *'GRANT postgres_reader TO "app-owner";'* ]]
+}
+
+@test "the connecting role is matched when it is quoted too" {
+  source "$REPO_ROOT/backends/postgresql/backend.sh"
+  export POSTGRES_HOST=h POSTGRES_PORT=5432 POSTGRES_USER=app-owner POSTGRES_PASSWORD=p POSTGRES_DB=d
+  backend_validate
+  stub_draining pg_restore
+  cat >"$STUB_BIN/psql" <<STUB
+#!/usr/bin/env bash
+cat >>"$BATS_TEST_TMPDIR/psql-stdin"
+STUB
+  chmod +x "$STUB_BIN/psql"
+  printf 'x' | gzip >"$WORK/postgresql-20260101_000000.dump.gz"
+  printf '%s\n' 'CREATE ROLE "app-owner";' "ALTER ROLE \"app-owner\" WITH LOGIN PASSWORD 'x';" \
+    'CREATE ROLE reader;' | gzip >"$WORK/globals-20260101_000000.sql.gz"
+
+  RESTORE_GLOBALS=true run backend_restore "$WORK/postgresql-20260101_000000.dump.gz"
+
+  [ "$status" -eq 0 ]
+  run cat "$BATS_TEST_TMPDIR/psql-stdin"
+  [[ "$output" != *'app-owner'* ]]
+  [[ "$output" == *'CREATE ROLE reader;'* ]]
+}

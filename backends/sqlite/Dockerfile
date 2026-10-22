@@ -14,6 +14,12 @@ ARG SUPERCRONIC_VERSION
 # Recorded in every run's _COMPLETE marker, so a backup says what wrote it.
 ARG VERSION=dev
 ENV PLATFORM_BACKUP_VERSION=${VERSION}
+# AWS CLI 2.23+ sends checksum headers by default, which several S3-compatible
+# providers reject: with 2.38 every GetObject failed against one of them, so
+# uploads worked and every fetch and restore did not. Only when the operation
+# requires one; set either variable to override.
+ENV AWS_REQUEST_CHECKSUM_CALCULATION=when_required \
+  AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
 LABEL org.opencontainers.image.title="platform-backup/sqlite" \
   org.opencontainers.image.description="SQLite database backup to S3-compatible storage" \
   org.opencontainers.image.source="https://github.com/quyendv/platform-backup"
