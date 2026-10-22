@@ -29,6 +29,10 @@ written by 0.6.x are fine; it is getting them back that failed.
   `pg_restore` then failed to log in. The connecting role's own `CREATE ROLE`
   and `ALTER ROLE` lines are now skipped; every other role and membership is
   applied.
+- **redis: `MODE=fetch` needed a reachable server.** Validation pinged
+  `REDIS_URL` in every mode, so the offline restore — fetching an RDB to place
+  into a server that is stopped or not created yet — failed with "Cannot reach
+  Redis". Fetch now only reads the object store, like sqlite's.
 
 ## [0.6.1] — 2026-10-22
 
