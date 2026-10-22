@@ -209,6 +209,18 @@ STUB
 
 # --- postgresql: globals -------------------------------------------------------
 
+# A stub that reads its stdin to the end, as the real tool does. One that exits
+# without reading races the writer into SIGPIPE, which pipefail reports as a
+# failure — on CI, not on a fast laptop.
+stub_draining() {
+  cat >"$STUB_BIN/$1" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 0
+STUB
+  chmod +x "$STUB_BIN/$1"
+}
+
 # psql answers the superuser question with $1; pg_dumpall records its arguments.
 stub_pg_globals() {
   local superuser="$1"
@@ -294,7 +306,7 @@ STUB
   export POSTGRES_HOST=h POSTGRES_PORT=5432 POSTGRES_USER=u POSTGRES_PASSWORD=p POSTGRES_DB=d
   backend_validate
   stub_pg_globals t
-  stub pg_restore 0
+  stub_draining pg_restore
   printf 'x' | gzip >"$WORK/postgresql-20260101_000000.dump.gz"
   printf 'CREATE ROLE app;' | gzip >"$WORK/globals-20260101_000000.sql.gz"
 
@@ -313,7 +325,7 @@ STUB
   export POSTGRES_HOST=h POSTGRES_PORT=5432 POSTGRES_USER=u POSTGRES_PASSWORD=p POSTGRES_DB=d
   backend_validate
   stub_pg_globals t
-  stub pg_restore 0
+  stub_draining pg_restore
   printf 'x' | gzip >"$WORK/postgresql-20260101_000000.dump.gz"
 
   RESTORE_GLOBALS=true run backend_restore "$WORK/postgresql-20260101_000000.dump.gz"
