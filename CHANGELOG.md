@@ -9,6 +9,16 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+### Added
+
+- **`files`: a seventh image, for applications whose state is a directory.**
+  It archives a selection of files as one `tar.zst` and checks the selection
+  before a run is kept: `FILES_REQUIRE` paths must be present, nothing may
+  match `FILES_FORBID`, and every `FILES_INCLUDE` entry must match something.
+  Restore extracts only into an empty directory unless
+  `FILES_RESTORE_OVERWRITE=true`, and never deletes. Ships with a tested
+  Jenkins example and restore drill (`backends/files/examples/jenkins/`).
+
 ## [0.6.3] — 2026-10-22
 
 ### Fixed

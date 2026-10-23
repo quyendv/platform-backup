@@ -39,6 +39,8 @@ compose_native() {
   cat <<'LIST'
 RESTART_POLICY
 SQLITE_VOLUME
+FILES_SOURCE
+FILES_RESTORE_DIR
 LIST
 }
 
@@ -55,13 +57,17 @@ known_keys() {
 }
 
 # Keys a manifest's stringData, a compose file's environment or an
-# .env.example sets, commented or not.
+# .env.example sets, commented or not; worked examples included.
 declared_keys() {
+  local -a yaml env
+  shopt -s nullglob
+  yaml=("$REPO_ROOT"/backends/*/k8s/*.yaml "$REPO_ROOT"/backends/*/docker/compose.yaml
+    "$REPO_ROOT"/backends/*/examples/*/compose.yaml)
+  env=("$REPO_ROOT"/backends/*/.env.example "$REPO_ROOT"/backends/*/examples/*/.env.example)
+  shopt -u nullglob
   {
-    grep -rhoE '^[[:space:]]*#?[[:space:]]*[A-Z][A-Z0-9_]{2,}:' \
-      "$REPO_ROOT"/backends/*/k8s/*.yaml "$REPO_ROOT"/backends/*/docker/compose.yaml
-    grep -rhoE '^[[:space:]]*#?[[:space:]]*[A-Z][A-Z0-9_]{2,}=' \
-      "$REPO_ROOT"/backends/*/.env.example
+    grep -rhoE '^[[:space:]]*#?[[:space:]]*[A-Z][A-Z0-9_]{2,}:' "${yaml[@]}"
+    grep -rhoE '^[[:space:]]*#?[[:space:]]*[A-Z][A-Z0-9_]{2,}=' "${env[@]}"
   } | tr -d ' #:=' | LC_ALL=C sort -u
 }
 
