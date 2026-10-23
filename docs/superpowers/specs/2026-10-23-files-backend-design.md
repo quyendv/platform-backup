@@ -128,6 +128,63 @@ On Docker hosts the directory is a bind mount; in Kubernetes, the chart's file-s
   for every other backend's restore.
 - Empty directories that match no include are not recreated.
 
+## Examples: Jenkins, as a production reference
+
+A selection is the part an operator gets wrong, so the backend ships one worked, tested example
+of a real application rather than leaving every operator to rediscover it. Jenkins is the case:
+its home mixes ~0.1% state with caches and logs, its credentials are encrypted by a key that sits
+in the same directory, and a restore has to bring plugins back too.
+
+`backends/files/examples/jenkins/`:
+
+| File | What it is |
+|---|---|
+| `README.md` | The procedure: what to select and why, keeping `secrets/master.key` out of the archive and where to keep it instead, deploying, restoring, the drill, and when an older backup may be retired |
+| `.env.example` | The selection as variables (below), plus the shared S3 and schedule settings |
+| `compose.yaml` | The scheduled backup with the home bind-mounted read-only (`cap_drop: ALL`, `cap_add: DAC_READ_SEARCH`), and a `restore` profile |
+| `drill.sh` | The restore drill, automated, exit status 0 only if every check passes |
+| `drill-check.groovy` | Init script the drill places in the restored home; never part of a backup |
+
+The selection:
+
+```
+FILES_INCLUDE  *.xml secret.key identity.key.enc secrets users nodes jobs userContent
+               plugins/*/META-INF/MANIFEST.MF .ssh/known_hosts .gitconfig
+FILES_EXCLUDE  secrets/master.key jobs/*/builds jobs/*/workspace*
+FILES_REQUIRE  config.xml credentials.xml secrets/hudson.util.Secret
+FILES_FORBID   secrets/master.key
+```
+
+`secrets/master.key` decrypts the other keys in `secrets/`, which decrypt every credential. It is
+created once at install and never changes, so the operator copies it out once and holds it like
+Vault's unseal keys; the archive alone then restores every job and setting but no credential.
+`FILES_FORBID` makes that a checked property rather than a convention.
+
+`drill.sh --key PATH [--image jenkins/jenkins:<version>] [--expect-jobs N]`, run on any Docker
+host:
+
+1. `MODE=restore` of the newest run (or `RESTORE_TIMESTAMP`) into a new empty directory, which
+   also runs verify.
+2. Copy the given key to `secrets/master.key`. The drill takes the operator's copy on purpose: it
+   proves the copy, not just the archive.
+3. Build `plugins.txt` from the archived manifests (`Short-Name:Plugin-Version`) and install them
+   into the restored home with `jenkins-plugin-cli`, in the given Jenkins image, with network.
+4. Start that image on the restored home with `--network none` and `drill-check.groovy` in
+   `init.groovy.d/`. The script puts Jenkins into quiet-down first and then prints one line,
+   `DRILL jobs=<n> folders=<n> nodes=<n> credentials=<n> decrypted=<n>`, counts only, never a
+   value. Without a network, nothing restored can run a build, push, call a webhook or reach an
+   agent.
+5. Pass when: the `DRILL` line appears; the log has no `Failed Loading plugin`; `decrypted` equals
+   `credentials`; and `jobs` equals `--expect-jobs` when given.
+6. Remove the container and the restored home (the key copy is shredded), whatever the outcome.
+
+A login realm tied to the production URL (OAuth, SSO) does not work on the drill instance; the
+drill does not need it, since every check is read from the log.
+
+Tested against a disposable Jenkins (current LTS) with nested folders, a multibranch-shaped
+`builds/` tree, a secret-text and a username/password credential, and several plugins: the drill
+passes with the right key and fails (`decrypted=0`) with a wrong one.
+
 ## Helm chart (quyendv/helm-charts, `charts/platform-backup`)
 
 The chart already schedules one store per release and mounts a claim for file-based engines
