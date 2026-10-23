@@ -76,21 +76,50 @@ _files_excludes() {
   done < <(_files_words FILES_EXCLUDE)
 }
 
+# _files_tar_benign ERRFILE: status 0 when tar's exit 1 is explained entirely
+# by changes that cannot tear a file: a directory whose entries changed while it
+# was listed (an application saving by temp-file-and-rename does that, measured
+# at 2 runs in 60 under a busy writer), or a file that vanished before it was
+# opened. A regular file that changed while read is a torn copy and is not
+# benign; neither is anything unrecognised, or an exit 1 with no explanation.
+_files_tar_benign() {
+  local line path seen=0
+  while IFS= read -r line; do
+    line="${line#tar: }"
+    case "$line" in
+      *": File removed before we read it") ;;
+      *": file changed as we read it")
+        path="${line%: file changed as we read it}"
+        [[ -d "${FILES_ROOT}/${path}" && ! -L "${FILES_ROOT}/${path}" ]] || return 1
+        ;;
+      *) return 1 ;;
+    esac
+    seen=1
+  done <"$1"
+  ((seen == 1))
+}
+
 backend_dump() {
-  local dir="$1" name="files-${RUN_ID}.tar.zst" list="$1/.files.list"
+  local dir="$1" name="files-${RUN_ID}.tar.zst" list="$1/.files.list" errs="$1/.files.err"
   local -a excludes codes
 
   log_info "$(tar --version | sed -n 1p), $(zstd --version)"
   _files_expand >"$list" || die "Expanding FILES_INCLUDE failed"
   mapfile -t excludes < <(_files_excludes)
 
-  # Both statuses are read straight away: tar exit 1 means a file changed or
-  # vanished while it was read, and a torn file uploaded as a good backup is
-  # worse than a failed run.
-  tar -C "$FILES_ROOT" --numeric-owner -cf - "${excludes[@]}" -T "$list" |
+  # Both statuses are read straight away. tar exit 1 means something changed or
+  # vanished while it was read; a torn file uploaded as a good backup is worse
+  # than a failed run, so only the changes _files_tar_benign accepts pass.
+  tar -C "$FILES_ROOT" --numeric-owner -cf - "${excludes[@]}" -T "$list" 2>"$errs" |
     zstd -q -10 -T0 >"${dir}/${name}"
   codes=("${PIPESTATUS[@]}")
   rm -f -- "$list"
+  [[ ! -s "$errs" ]] || cat -- "$errs" >&2
+  if ((codes[0] == 1)) && _files_tar_benign "$errs"; then
+    log_warn "tar saw directories change or files vanish while it read them; no file was torn"
+    codes[0]=0
+  fi
+  rm -f -- "$errs"
   ((codes[0] == 0)) || die "tar failed (exit ${codes[0]}) archiving ${FILES_ROOT}"
   ((codes[1] == 0)) || die "zstd failed (exit ${codes[1]})"
 

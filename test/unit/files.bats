@@ -322,3 +322,57 @@ good_archive() {
   [[ "$output" == *"not a valid zstd"* ]]
   [ ! -e "$WORK/target" ] || [ -z "$(ls -A "$WORK/target")" ]
 }
+
+# fake_tar EXIT MESSAGE...: a tar that prints MESSAGEs on stderr and exits EXIT.
+fake_tar() {
+  local code="$1"
+  shift
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  {
+    printf '#!/usr/bin/env bash\n'
+    # Written into the stub verbatim, to expand when the stub runs.
+    # shellcheck disable=SC2016
+    printf '[[ "$1" == --version ]] && { echo "tar (GNU tar) 1.35"; exit 0; }\n'
+    for m in "$@"; do printf 'echo %q >&2\n' "tar: $m"; done
+    printf 'exit %s\n' "$code"
+  } >"$BATS_TEST_TMPDIR/bin/tar"
+  chmod +x "$BATS_TEST_TMPDIR/bin/tar"
+}
+
+@test "a directory that changed while read only warns" {
+  jenkins_selection
+  fake_tar 1 'jobs/x: file changed as we read it'
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" RUN_ID=20260101_000000 run --separate-stderr backend_dump "$WORK"
+  [ "$status" -eq 0 ]
+  [ "$output" = "files-20260101_000000.tar.zst" ]
+  [[ "$stderr" == *"jobs/x: file changed as we read it"* ]]
+}
+
+@test "a file removed before it was read only warns" {
+  jenkins_selection
+  fake_tar 1 'jobs/x/atomic123.tmp: File removed before we read it'
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -eq 0 ]
+}
+
+@test "a regular file that changed while read fails the dump" {
+  jenkins_selection
+  fake_tar 1 'jobs/x: file changed as we read it' 'jobs/x/config.xml: file changed as we read it'
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"jobs/x/config.xml"* ]]
+}
+
+@test "an unrecognised tar warning fails the dump" {
+  jenkins_selection
+  fake_tar 1 'jobs/x: something else entirely'
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -ne 0 ]
+}
+
+@test "tar exit 2 fails the dump whatever it printed" {
+  jenkins_selection
+  fake_tar 2 'jobs/x: file changed as we read it'
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -ne 0 ]
+}
