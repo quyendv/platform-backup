@@ -67,3 +67,94 @@ backend_validate() {
   [[ -r "$FILES_ROOT" && -x "$FILES_ROOT" ]] || die "FILES_ROOT ${FILES_ROOT} is not readable by uid $(id -u)"
   _files_expand >/dev/null
 }
+
+# _files_excludes -> one --exclude=PATTERN argument per FILES_EXCLUDE entry.
+_files_excludes() {
+  local pattern
+  while IFS= read -r pattern; do
+    printf -- '--exclude=%s\n' "$pattern"
+  done < <(_files_words FILES_EXCLUDE)
+}
+
+backend_dump() {
+  local dir="$1" name="files-${RUN_ID}.tar.zst" list="$1/.files.list"
+  local -a excludes codes
+
+  log_info "$(tar --version | sed -n 1p), $(zstd --version)"
+  _files_expand >"$list" || die "Expanding FILES_INCLUDE failed"
+  mapfile -t excludes < <(_files_excludes)
+
+  # Both statuses are read straight away: tar exit 1 means a file changed or
+  # vanished while it was read, and a torn file uploaded as a good backup is
+  # worse than a failed run.
+  tar -C "$FILES_ROOT" --numeric-owner -cf - "${excludes[@]}" -T "$list" |
+    zstd -q -10 -T0 >"${dir}/${name}"
+  codes=("${PIPESTATUS[@]}")
+  rm -f -- "$list"
+  ((codes[0] == 0)) || die "tar failed (exit ${codes[0]}) archiving ${FILES_ROOT}"
+  ((codes[1] == 0)) || die "zstd failed (exit ${codes[1]})"
+
+  printf '%s' "$name"
+}
+
+# _files_listing ARCHIVE -> the archive's entries, one per line, directories
+# without their trailing slash. Fails if the archive cannot be read whole.
+_files_listing() {
+  local archive="$1"
+  local -a codes
+  zstd -dc -- "$archive" | tar -tf - | sed 's|/$||'
+  codes=("${PIPESTATUS[@]}")
+  ((codes[0] == 0 && codes[1] == 0)) || {
+    printf 'Cannot list %s (zstd exit %s, tar exit %s)\n' "$archive" "${codes[0]}" "${codes[1]}" >&2
+    return 1
+  }
+}
+
+# _files_matches PATTERN ENTRY: status 0 when ENTRY matches PATTERN the way tar
+# --exclude matches by default (wildcards cross '/', unanchored, and a matched
+# directory takes everything under it). One definition, so FILES_FORBID means
+# exactly what the same pattern would mean in FILES_EXCLUDE.
+_files_matches() {
+  local p="$1" e="$2"
+  # Unquoted on the right of == on purpose: these are patterns.
+  # shellcheck disable=SC2053
+  [[ "$e" == $p || "$e" == */$p || "$e" == $p/* || "$e" == */$p/* ]]
+}
+
+backend_verify() {
+  local archive="$1" listing entry pattern required count
+  zstd -q -t -- "$archive" || die "Artifact is not a valid zstd stream: ${archive}"
+  listing="$(mktemp)"
+  _files_listing "$archive" >"$listing" || {
+    rm -f -- "$listing"
+    die "Artifact is not a readable tar archive: ${archive}"
+  }
+  count="$(wc -l <"$listing")"
+  ((count > 0)) || {
+    rm -f -- "$listing"
+    die "Artifact holds no entries: ${archive}"
+  }
+
+  local missing=""
+  while IFS= read -r required; do
+    grep -Fxq -- "$required" "$listing" || missing+="${missing:+, }${required}"
+  done < <(_files_words FILES_REQUIRE)
+  [[ -z "$missing" ]] || {
+    rm -f -- "$listing"
+    die "FILES_REQUIRE path(s) not in the archive: ${missing}"
+  }
+
+  local forbidden=""
+  while IFS= read -r pattern; do
+    while IFS= read -r entry; do
+      if _files_matches "$pattern" "$entry"; then
+        forbidden="'${entry}', which matches FILES_FORBID '${pattern}'"
+        break 2
+      fi
+    done <"$listing"
+  done < <(_files_words FILES_FORBID)
+  rm -f -- "$listing"
+  [[ -z "$forbidden" ]] || die "Archive holds ${forbidden}"
+
+  log_info "Archive holds ${count} entries; required paths present, no forbidden path"
+}

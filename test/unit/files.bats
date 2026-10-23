@@ -116,3 +116,138 @@ expand_sorted() {
   MODE=fetch run backend_validate
   [ "$status" -eq 0 ]
 }
+
+# list_archive FILE -> the archive's entries, directories without the slash.
+list_archive() {
+  zstd -dc -- "$1" | tar -tf - | sed 's|/$||'
+}
+
+# jenkins_selection: the shape of the Jenkins example's variables.
+jenkins_selection() {
+  export FILES_ROOT="$ROOT"
+  export FILES_INCLUDE='*.xml jobs plugins/*/META-INF/MANIFEST.MF secrets'
+  export FILES_EXCLUDE='secrets/master.key jobs/*/builds'
+}
+
+@test "dump archives the selection and nothing excluded" {
+  jenkins_selection
+  RUN_ID=20260101_000000 run --separate-stderr backend_dump "$WORK"
+  [ "$status" -eq 0 ]
+  [ "$output" = "files-20260101_000000.tar.zst" ]
+  run list_archive "$WORK/files-20260101_000000.tar.zst"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'a.xml'* ]]
+  [[ "$output" == *"jobs/x/config.xml"* ]]
+  [[ "$output" == *"plugins/p1/META-INF/MANIFEST.MF"* ]]
+  [[ "$output" == *"secrets/hudson.util.Secret"* ]]
+  [[ "$output" != *master.key* ]]
+  [[ "$output" != */builds/* ]]
+  [[ "$output" != *p1.jpi* ]]
+}
+
+@test "excludes reach every depth" {
+  jenkins_selection
+  mkdir -p "$ROOT/jobs/a/jobs/b/branches/c/builds/9"
+  echo log >"$ROOT/jobs/a/jobs/b/branches/c/builds/9/log"
+  echo cfg >"$ROOT/jobs/a/jobs/b/branches/c/config.xml"
+  RUN_ID=20260101_000000 backend_dump "$WORK" >/dev/null
+  run list_archive "$WORK/files-20260101_000000.tar.zst"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"jobs/a/jobs/b/branches/c/config.xml"* ]]
+  [[ "$output" != *builds* ]]
+}
+
+@test "owners are numeric in the archive" {
+  jenkins_selection
+  RUN_ID=20260101_000000 backend_dump "$WORK" >/dev/null
+  run bash -c "zstd -dc '$WORK/files-20260101_000000.tar.zst' | tar -tvf - a.xml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$(id -u)/$(id -g)"* ]]
+}
+
+@test "a symlinked root is archived through the link" {
+  ln -s "$ROOT" "$BATS_TEST_TMPDIR/link-root"
+  FILES_ROOT="$BATS_TEST_TMPDIR/link-root" FILES_INCLUDE='*.xml' RUN_ID=20260101_000000 \
+    run backend_dump "$WORK"
+  [ "$status" -eq 0 ]
+  run list_archive "$WORK/files-20260101_000000.tar.zst"
+  [[ "$output" == *a.xml* ]]
+}
+
+@test "a symlink inside the root is kept as a link" {
+  ln -s /etc "$ROOT/link"
+  FILES_ROOT="$ROOT" FILES_INCLUDE='link' RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -eq 0 ]
+  run bash -c "zstd -dc '$WORK/files-20260101_000000.tar.zst' | tar -tvf -"
+  [[ "$output" == *"link -> /etc"* ]]
+  [[ "$output" != *passwd* ]]
+}
+
+@test "tar exit 1 fails the dump" {
+  jenkins_selection
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$BATS_TEST_TMPDIR/bin/tar"
+  chmod +x "$BATS_TEST_TMPDIR/bin/tar"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *tar* ]]
+}
+
+@test "an unreadable file fails the dump" {
+  [ "$(id -u)" -ne 0 ] || skip "root reads everything"
+  echo s >"$ROOT/locked.xml"
+  chmod 000 "$ROOT/locked.xml"
+  FILES_ROOT="$ROOT" FILES_INCLUDE='*.xml' RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *tar* ]]
+}
+
+@test "_files_matches follows tar exclusion semantics" {
+  run _files_matches 'secrets/master.key' 'secrets/master.key'
+  [ "$status" -eq 0 ]
+  run _files_matches 'secrets/master.key' 'x/secrets/master.key'
+  [ "$status" -eq 0 ]
+  run _files_matches 'jobs/*/builds' 'jobs/a/jobs/b/builds/1/log'
+  [ "$status" -eq 0 ]
+  run _files_matches '*.jpi' 'plugins/p1.jpi'
+  [ "$status" -eq 0 ]
+  run _files_matches 'secrets/master.key' 'secrets/master.key.bak'
+  [ "$status" -eq 1 ]
+  run _files_matches 'secrets' 'notsecrets/x'
+  [ "$status" -eq 1 ]
+}
+
+# archive_of INCLUDE [EXCLUDE] -> path of a fresh dump with that selection.
+archive_of() {
+  FILES_ROOT="$ROOT" FILES_INCLUDE="$1" FILES_EXCLUDE="${2:-}" RUN_ID=20260101_000000 \
+    backend_dump "$WORK" >/dev/null
+  printf '%s' "$WORK/files-20260101_000000.tar.zst"
+}
+
+@test "verify fails when a FILES_REQUIRE path is missing" {
+  archive="$(archive_of '*.xml')"
+  FILES_REQUIRE='a.xml secrets/hudson.util.Secret' run backend_verify "$archive"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"secrets/hudson.util.Secret"* ]]
+}
+
+@test "verify fails when an entry matches FILES_FORBID" {
+  archive="$(archive_of 'secrets')"
+  FILES_FORBID='secrets/master.key' run backend_verify "$archive"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"secrets/master.key"* ]]
+}
+
+@test "verify fails on a corrupt archive" {
+  archive="$(archive_of '*.xml jobs')"
+  head -c 20 "$archive" >"$WORK/cut.tar.zst"
+  run backend_verify "$WORK/cut.tar.zst"
+  [ "$status" -ne 0 ]
+}
+
+@test "verify passes a good archive" {
+  archive="$(archive_of 'secrets jobs' 'secrets/master.key')"
+  FILES_REQUIRE='jobs/x/config.xml secrets/hudson.util.Secret' FILES_FORBID='secrets/master.key' \
+    run backend_verify "$archive"
+  [ "$status" -eq 0 ]
+}

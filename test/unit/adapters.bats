@@ -420,3 +420,11 @@ STUB
   [[ "$output" != *'app-owner'* ]]
   [[ "$output" == *'CREATE ROLE reader;'* ]]
 }
+
+@test "files fails when tar fails" {
+  source "$REPO_ROOT/backends/files/backend.sh"
+  export FILES_ROOT="$BATS_TEST_TMPDIR" FILES_INCLUDE=.
+  stub tar 2
+  run backend_dump "$BATS_TEST_TMPDIR"
+  [ "$status" -ne 0 ]
+}
