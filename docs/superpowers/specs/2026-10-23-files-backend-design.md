@@ -241,3 +241,34 @@ create `/backup` as uid 999; this one runs as root with a single capability, so 
 `MODE=restore` requires the parent of `FILES_RESTORE_TARGET` (default `FILES_ROOT`), not
 `FILES_ROOT` itself.
 
+**The Jenkins example, as verified.** Running it against a fresh Jenkins changed three things:
+optional includes (`?entry`), because a fresh home has no `users/` until security is enabled and
+`fingerprints/`, `.ssh/` appear only once used; an exclude for Jenkins' temp files, measured as
+`config.xml-atomic<digits>tmp` (`*-atomic*tmp`; the unanchored pattern must match the whole name, so
+`atomic*tmp` would not); and `--add-host host.docker.internal:host-gateway` in `drill.sh`, without
+which its restore could not reach an object store on the Docker host. The selection as shipped:
+
+```
+FILES_INCLUDE  *.xml secrets jobs plugins/*/META-INF/MANIFEST.MF ?secret.key ?identity.key.enc
+               ?users ?nodes ?userContent ?fingerprints ?.ssh/known_hosts ?.gitconfig
+FILES_EXCLUDE  secrets/master.key jobs/*/builds jobs/*/workspace* *-atomic*tmp
+FILES_REQUIRE  config.xml credentials.xml secrets/hudson.util.Secret
+FILES_FORBID   secrets/master.key
+```
+
+## Verified (2026-10-23)
+
+On a disposable Ubuntu 24.04 VM, `jenkins/jenkins:2.580.1-jdk21`, two nested folders, five
+pipeline jobs, ten builds, two system credentials and one folder credential, 51 plugins, MinIO:
+
+```
+backup (example compose):  91 entries, 15 147 bytes, run + .sha256 + _COMPLETE in the bucket, 11 s
+drill, right key:          DRILL jobs=5 folders=2 nodes=0 credentials=3 decrypted=3 -> PASS, 137 s
+drill, random key:         decrypted=0 -> FAIL, exit 1, no directory or container left behind
+real restore (README):     compose restore into an empty home; second attempt refused; 51 plugins
+                           reinstalled from manifests, 0 failed; credentials 3/3; numbering continues
+planned move (README):     rsync pass 1 while running (2 039 files, 150 MB, 0.2 s), quiet down,
+                           stop, pass 2 (1 file); plain image on the copy: history and old console
+                           logs intact, credentials 3/3, 0 failed plugins, next build #3 SUCCESS
+```
+

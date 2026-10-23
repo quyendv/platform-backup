@@ -76,6 +76,7 @@ say "1/5 restore the backup into an empty directory"
 docker run --rm --env-file "$ENV_FILE" \
   -e MODE=restore -e SCHEDULE= -e NOTIFY_ON=never -e BACKUP_DIR=/tmp/backup \
   -e FILES_RESTORE_TARGET=/target -v "${HOME_DIR}:/target" \
+  --add-host host.docker.internal:host-gateway \
   --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
   "$FILES_IMAGE" || verdict_fail "restore failed"
 [[ -e "${HOME_DIR}/config.xml" ]] || verdict_fail "the restored home has no config.xml"
