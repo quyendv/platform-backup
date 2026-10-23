@@ -219,3 +219,25 @@ The chart change lands only after the image is released and has passed a real re
   rename during the dump; round trip into an empty target with byte-for-byte comparison, owners
   and modes; an in-place writer during the dump fails the run.
 - `test/smoke.sh`: GNU tar (not BusyBox) and zstd run in the image.
+
+## After implementation (2026-10-23)
+
+**tar exit 1 is not always a torn file.** Measured with a writer saving by temp file and rename
+in the same directory (the way Jenkins' `AtomicFileWriter` saves): 2 runs in 60 exited 1 with
+`<dir>: file changed as we read it`, about the directory, not a file; and the integration test
+caught `<dir>/atomicXXXX.tmp: file changed as we read it` on a temp file that was renamed away
+before tar finished. Failing those runs would fail a Jenkins backup now and then for nothing. The
+adapter therefore reads tar's warnings when it exits 1 and passes the run, with a warning, only when
+every one of them is a directory that changed, a file removed before it was read, or a file that
+changed and no longer exists afterwards. A file that changed and is still there, any other message,
+or an exit 1 with no message still fails. The integration test pins both sides: a temp-and-rename
+writer during the backup passes, an in-place appender fails on that file.
+
+**Root with only `DAC_READ_SEARCH` cannot write a directory another uid owns.** The other images
+create `/backup` as uid 999; this one runs as root with a single capability, so `/backup` and
+`/restore` are root-owned in its image.
+
+**Restore validates only where it writes.** The source need not be mounted for a restore, so
+`MODE=restore` requires the parent of `FILES_RESTORE_TARGET` (default `FILES_ROOT`), not
+`FILES_ROOT` itself.
+

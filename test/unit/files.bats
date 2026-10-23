@@ -376,3 +376,22 @@ fake_tar() {
   PATH="$BATS_TEST_TMPDIR/bin:$PATH" RUN_ID=20260101_000000 run backend_dump "$WORK"
   [ "$status" -ne 0 ]
 }
+
+@test "validate in restore mode needs only the target's parent directory" {
+  MODE=restore FILES_ROOT=/nonexistent FILES_RESTORE_TARGET="$WORK/target" run backend_validate
+  [ "$status" -eq 0 ]
+}
+
+@test "validate in restore mode fails when the target's parent is missing" {
+  MODE=restore FILES_ROOT=/nonexistent FILES_RESTORE_TARGET=/nonexistent/target run backend_validate
+  [ "$status" -ne 0 ]
+  [[ "$output" == */nonexistent* ]]
+}
+
+@test "a file that changed while read and is gone afterwards only warns" {
+  jenkins_selection
+  fake_tar 1 'jobs/x/atomic123tmp: file changed as we read it'
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no file was torn"* ]]
+}

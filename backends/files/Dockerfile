@@ -37,7 +37,9 @@ COPY healthcheck.sh ./healthcheck.sh
 RUN chmod +x entrypoint.sh healthcheck.sh
 
 ENV BACKUP_DIR=/backup RESTORE_DIR=/restore
-RUN mkdir -p /backup /restore && chown -R 999:1000 /backup /restore
+# Owned by root, unlike the other images: a backup runs as root with only
+# DAC_READ_SEARCH, which reads anything but writes only what root owns.
+RUN mkdir -p /backup /restore
 VOLUME ["/backup"]
 
 # Makes a failing schedule visible to docker ps and anything watching

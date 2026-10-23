@@ -60,10 +60,18 @@ backend_validate() {
   case "${MODE:-backup}" in
     # fetch only reads the object store.
     fetch) return 0 ;;
+    # The source need not be mounted for a restore; only where it goes. The
+    # target itself may be missing: restore creates it.
+    restore)
+      local target="${FILES_RESTORE_TARGET:-${FILES_ROOT:-}}"
+      [[ -n "$target" ]] || die "Missing required environment variable(s): FILES_RESTORE_TARGET or FILES_ROOT"
+      [[ -d "$(dirname -- "$target")" ]] ||
+        die "The directory restore writes into, $(dirname -- "$target"), does not exist (is the volume mounted?)"
+      return 0
+      ;;
   esac
   require_env FILES_ROOT
   [[ -d "$FILES_ROOT" ]] || die "FILES_ROOT ${FILES_ROOT} is not a directory (is it mounted?)"
-  [[ "${MODE:-backup}" == restore ]] && return 0
   [[ -r "$FILES_ROOT" && -x "$FILES_ROOT" ]] || die "FILES_ROOT ${FILES_ROOT} is not readable by uid $(id -u)"
   _files_expand >/dev/null
 }
@@ -77,10 +85,13 @@ _files_excludes() {
 }
 
 # _files_tar_benign ERRFILE: status 0 when tar's exit 1 is explained entirely
-# by changes that cannot tear a file: a directory whose entries changed while it
-# was listed (an application saving by temp-file-and-rename does that, measured
-# at 2 runs in 60 under a busy writer), or a file that vanished before it was
-# opened. A regular file that changed while read is a torn copy and is not
+# by changes that cannot tear a file the application uses. An application that
+# saves by temp-file-and-rename causes all three (measured under a busy writer):
+#   - a directory whose entries changed while it was listed;
+#   - a file removed before tar opened it;
+#   - a file that changed while read and no longer exists once tar is done:
+#     the temp file, renamed away; the real file was replaced whole.
+# A file that changed while read and is still there is a torn copy and is not
 # benign; neither is anything unrecognised, or an exit 1 with no explanation.
 _files_tar_benign() {
   local line path seen=0
@@ -90,7 +101,9 @@ _files_tar_benign() {
       *": File removed before we read it") ;;
       *": file changed as we read it")
         path="${line%: file changed as we read it}"
-        [[ -d "${FILES_ROOT}/${path}" && ! -L "${FILES_ROOT}/${path}" ]] || return 1
+        if [[ -e "${FILES_ROOT}/${path}" || -L "${FILES_ROOT}/${path}" ]]; then
+          [[ -d "${FILES_ROOT}/${path}" && ! -L "${FILES_ROOT}/${path}" ]] || return 1
+        fi
         ;;
       *) return 1 ;;
     esac

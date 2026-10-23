@@ -46,11 +46,16 @@ them (`my?dir` for `my dir`).
 ## How the copy is made
 
 - `tar --numeric-owner` through `zstd -10`, streamed, from the expanded list.
-- **A file that changes while it is read fails the run** (tar exit 1). A torn
-  file uploaded as a good backup is worse than a failed run, which is reported
-  and tried again at the next schedule. Applications that save by writing a
-  temporary file and renaming it (most do, Jenkins included) never trigger it;
-  logs written in place do, which is one more reason to exclude them.
+- **A file that changes while it is read, and is still there afterwards, fails
+  the run** (tar exit 1). A torn file uploaded as a good backup is worse than a
+  failed run, which is reported and tried again at the next schedule. Logs
+  written in place do this, which is one more reason to exclude them.
+- **Saving by temp file and rename does not fail it** (most applications,
+  Jenkins included). That makes tar report a directory whose entries changed, a
+  temp file removed before it was read, or a temp file that changed and was
+  renamed away before tar finished. None of those tears a file the application
+  uses, so each is logged as a warning. The temp files themselves may land in
+  the archive; exclude them by name if you know it (the Jenkins example does).
 - Consistency is per file, not across files: two files changed together can be
   archived one before and one after the change.
 - Before a run is kept, verify reads the whole archive back: valid zstd, a
