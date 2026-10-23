@@ -395,3 +395,15 @@ fake_tar() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"no file was torn"* ]]
 }
+
+@test "an include marked ? may match nothing" {
+  FILES_ROOT="$ROOT" FILES_INCLUDE='a.xml ?users ?nope/*' run _files_expand
+  [ "$status" -eq 0 ]
+  [ "$output" = "a.xml" ]
+}
+
+@test "an include marked ? is taken when it matches" {
+  FILES_ROOT="$ROOT" FILES_INCLUDE='?.ssh/known_hosts ?*.xml' run expand_sorted
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '.ssh/known_hosts\na.xml\nb.xml')" ]
+}

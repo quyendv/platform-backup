@@ -33,8 +33,11 @@ _files_words() {
 
 # _files_expand -> every path FILES_INCLUDE matches, relative to FILES_ROOT, one
 # per line. Dies naming the first entry that matches nothing: a typo or a moved
-# file must fail the run, not quietly shrink the backup. globstar lets `**`
-# cross directories; dotglob stays off, so a glob names dotfiles explicitly.
+# file must fail the run, not quietly shrink the backup. An entry written with
+# one leading `?` is optional: the `?` is removed and the rest may match nothing
+# (an application creates some directories only once a feature is used).
+# globstar lets `**` cross directories; dotglob stays off, so a glob names
+# dotfiles explicitly.
 _files_expand() {
   (
     cd -- "$FILES_ROOT" || die "Cannot enter FILES_ROOT ${FILES_ROOT}"
@@ -42,13 +45,19 @@ _files_expand() {
     shopt -u nullglob dotglob
     # The default applies when the variable is set empty too, not only unset.
     FILES_INCLUDE="${FILES_INCLUDE:-.}"
-    local pattern
+    local pattern optional
     local -a matches
     while IFS= read -r pattern; do
+      optional=false
+      if [[ "$pattern" == \?* ]]; then
+        optional=true
+        pattern="${pattern#\?}"
+      fi
       # The pattern is meant to glob here, unquoted.
       # shellcheck disable=SC2206
       matches=($pattern)
       if ((${#matches[@]} == 1)) && [[ "${matches[0]}" == "$pattern" && ! -e "$pattern" && ! -L "$pattern" ]]; then
+        [[ "$optional" == true ]] && continue
         die "FILES_INCLUDE entry '${pattern}' matches nothing under ${FILES_ROOT}"
       fi
       printf '%s\n' "${matches[@]}"

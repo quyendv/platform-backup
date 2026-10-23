@@ -25,8 +25,11 @@ something unusable. Four variables express the selection:
   itself (tar does not expand globs in the names it is given), so
   `plugins/*/META-INF/MANIFEST.MF` takes one small file per plugin and nothing
   else. **Every entry must match something**: a typo or a moved file fails the
-  run instead of quietly shrinking the backup. Globs do not match dotfiles
-  unless they name them (`.ssh/known_hosts`).
+  run instead of quietly shrinking the backup. For what an application creates
+  only once a feature is used, write the entry with one leading `?`
+  (`?fingerprints`): taken when present, skipped when not. (A glob that itself
+  starts with `?` is written `??…`.) Globs do not match dotfiles unless they
+  name them (`.ssh/known_hosts`).
 - **`FILES_EXCLUDE`** — GNU tar `--exclude` patterns. Wildcards cross `/` and a
   pattern matches at any depth, so `jobs/*/builds` also drops
   `jobs/a/jobs/b/builds`. **An exclusion beats an include**: a file named in
@@ -67,7 +70,7 @@ them (`my?dir` for `my dir`).
 | Variable | Required | Default | Notes |
 |---|:--:|---|---|
 | `FILES_ROOT` | ✅ | — | The directory backed up, as mounted in the container |
-| `FILES_INCLUDE` | | `.` | Paths or globs to take; each must match |
+| `FILES_INCLUDE` | | `.` | Paths or globs to take; each must match unless written `?entry` |
 | `FILES_EXCLUDE` | | *(empty)* | tar `--exclude` patterns |
 | `FILES_REQUIRE` | | *(empty)* | Paths every archive must hold |
 | `FILES_FORBID` | | *(empty)* | Patterns no archived path may match |
