@@ -62,7 +62,7 @@ services:
   # Raft storage, not `vault server -dev`: dev mode uses in-memory storage and
   # has no raft snapshots to take.
   vault:
-    image: hashicorp/vault:1.18
+    image: hashicorp/vault:2.2
     cap_add: [IPC_LOCK]
     # A fresh named volume is root-owned, and the image's entrypoint drops to
     # uid 100 on its own. Start as root only long enough to chown the mount,
@@ -73,6 +73,9 @@ services:
       - chown -R vault:vault /vault/data && exec docker-entrypoint.sh server
     environment:
       VAULT_ADDR: http://127.0.0.1:8200
+      # From 2.x the image's entrypoint calls setcap, which the image no longer
+      # ships; mlock is disabled below anyway.
+      SKIP_SETCAP: "true"
       VAULT_LOCAL_CONFIG: |
         storage "raft" { path = "/vault/data", node_id = "it" }
         listener "tcp" { address = "0.0.0.0:8200", tls_disable = true }

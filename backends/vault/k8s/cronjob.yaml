@@ -129,7 +129,7 @@ spec:
             - name: vault-agent
               # Any recent agent works against any recent server; matching the
               # server's version is the conservative choice.
-              image: hashicorp/vault:1.18
+              image: hashicorp/vault:2.2
               args: ["agent", "-config=/vault/config/agent.hcl"]
               env:
                 - name: VAULT_ADDR

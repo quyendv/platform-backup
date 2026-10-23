@@ -9,6 +9,37 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+### Security
+
+- **Every image rebuilt on current versions; no fixable HIGH or CRITICAL CVE
+  is left except in MongoDB's own tools.** Measured with trivy
+  (`--ignore-unfixed`, HIGH and CRITICAL) before and after:
+
+  | Image | Before | After |
+  |---|---|---|
+  | postgresql (each of pg14-17) | 1 critical, 25 high | 0 |
+  | mongodb | 1 critical, 65 high | 40 high, all in the MongoDB Database Tools binaries (Go 1.26.8, x/net 0.59; 100.19.1 is the newest release) |
+  | etcd | 3 critical, 76 high | 0 |
+  | vault | 5 critical, 107 high | 0 |
+  | redis (7 and 8), sqlite, files | 1 critical, 25 high | 0 |
+
+  The 25-26 common to every image were supercronic 0.2.34's Go runtime.
+
+### Changed
+
+- supercronic 0.2.34 → 0.2.51.
+- Alpine 3.22 → 3.24 (sqlite, files); etcd's base 3.20, end of life since
+  April 2026, → 3.24. sqlite in the image is now 3.53.4, and the unit tests'
+  pinned sqlite follows it.
+- etcdctl 3.5.16 → 3.5.35. Not 3.6: it drops `etcdctl snapshot status`, which
+  the backup's verification runs. Checked against etcd 3.5.35 and 3.6.16 servers.
+- vault: the CLI's base image 1.18 → 2.2, and the Vault Agent sidecar in the
+  shipped compose file and CronJob the same. Checked against a 1.18 and a 2.2
+  server. From 2.x the image's own entrypoint needs `SKIP_SETCAP=true` (the
+  sidecar already sets it).
+- postgresql and mongodb: Debian bookworm → trixie; MongoDB Database Tools
+  100.14.1 → 100.19.1 on arm64 (amd64 takes the repository's newest).
+
 ### Added
 
 - **`files`: a seventh image, for applications whose state is a directory.**

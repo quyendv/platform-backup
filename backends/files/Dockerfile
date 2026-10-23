@@ -3,8 +3,8 @@
 # files backup image: a selection of files under one mounted directory, as one
 # tar.zst. GNU tar, not BusyBox: the adapter relies on -T, --numeric-owner and
 # GNU's exclusion wildcard semantics (see the design).
-ARG ALPINE_VERSION=3.22
-ARG SUPERCRONIC_VERSION=0.2.34
+ARG ALPINE_VERSION=3.24
+ARG SUPERCRONIC_VERSION=0.2.51
 
 FROM alpine:${ALPINE_VERSION}
 ARG TARGETARCH
