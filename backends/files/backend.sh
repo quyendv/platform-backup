@@ -158,3 +158,31 @@ backend_verify() {
 
   log_info "Archive holds ${count} entries; required paths present, no forbidden path"
 }
+
+# _files_target_empty DIR: status 0 when DIR holds nothing but lost+found, which
+# a freshly formatted volume always has.
+_files_target_empty() {
+  [[ -z "$(find "$1" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit)" ]]
+}
+
+backend_restore() {
+  local archive="$1" target="${FILES_RESTORE_TARGET:-$FILES_ROOT}" count
+  local -a codes
+
+  backend_verify "$archive"
+  mkdir -p -- "$target" || die "Cannot create the restore target ${target}"
+  if ! _files_target_empty "$target"; then
+    bool_is_true FILES_RESTORE_OVERWRITE ||
+      die "Restore target ${target} is not empty; set FILES_RESTORE_OVERWRITE=true to extract over it (nothing is deleted)"
+    log_warn "Extracting over ${target}: archived files replace their namesakes, everything else stays"
+  fi
+  log_warn "Restore writes into ${target}: the application must be stopped (a running one cannot be detected)"
+
+  zstd -dc -- "$archive" | tar -C "$target" -xf - --same-owner --numeric-owner --preserve-permissions
+  codes=("${PIPESTATUS[@]}")
+  ((codes[0] == 0)) || die "zstd failed (exit ${codes[0]}) reading ${archive}"
+  ((codes[1] == 0)) || die "tar failed (exit ${codes[1]}) extracting into ${target}"
+
+  count="$(_files_listing "$archive" | wc -l)"
+  log_ok "Restored ${count} entries into ${target}"
+}

@@ -251,3 +251,74 @@ archive_of() {
     run backend_verify "$archive"
   [ "$status" -eq 0 ]
 }
+
+# good_archive -> a dump of the Jenkins-shaped selection.
+good_archive() {
+  archive_of '*.xml jobs secrets plugins/*/META-INF/MANIFEST.MF' 'secrets/master.key jobs/*/builds'
+}
+
+@test "restore into an empty target recreates the selection byte for byte" {
+  chmod 0640 "$ROOT/a.xml"
+  archive="$(good_archive)"
+  FILES_ROOT="$ROOT" FILES_RESTORE_TARGET="$WORK/target" run backend_restore "$archive"
+  [ "$status" -eq 0 ]
+  diff "$ROOT/a.xml" "$WORK/target/a.xml"
+  diff -r "$ROOT/jobs/x/config.xml" "$WORK/target/jobs/x/config.xml"
+  [ "$(stat -c %a "$WORK/target/a.xml")" = 640 ]
+  [ ! -e "$WORK/target/secrets/master.key" ]
+  [ ! -e "$WORK/target/jobs/x/builds" ]
+}
+
+@test "restore refuses a non-empty target and writes nothing" {
+  archive="$(good_archive)"
+  mkdir -p "$WORK/target"
+  echo keep >"$WORK/target/keep.txt"
+  FILES_ROOT="$ROOT" FILES_RESTORE_TARGET="$WORK/target" run backend_restore "$archive"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *FILES_RESTORE_OVERWRITE* ]]
+  [ "$(ls -A "$WORK/target")" = keep.txt ]
+}
+
+@test "overwrite replaces namesakes and leaves everything else" {
+  archive="$(good_archive)"
+  mkdir -p "$WORK/target"
+  echo keep >"$WORK/target/keep.txt"
+  echo stale >"$WORK/target/a.xml"
+  FILES_ROOT="$ROOT" FILES_RESTORE_TARGET="$WORK/target" FILES_RESTORE_OVERWRITE=true \
+    run backend_restore "$archive"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$WORK/target/a.xml")" = a ]
+  [ "$(cat "$WORK/target/keep.txt")" = keep ]
+}
+
+@test "a target holding only lost+found is empty" {
+  archive="$(good_archive)"
+  mkdir -p "$WORK/target/lost+found"
+  FILES_ROOT="$ROOT" FILES_RESTORE_TARGET="$WORK/target" run backend_restore "$archive"
+  [ "$status" -eq 0 ]
+  [ -e "$WORK/target/a.xml" ]
+}
+
+@test "a missing target directory is created" {
+  archive="$(good_archive)"
+  FILES_ROOT="$ROOT" FILES_RESTORE_TARGET="$WORK/new/deeper" run backend_restore "$archive"
+  [ "$status" -eq 0 ]
+  [ -e "$WORK/new/deeper/a.xml" ]
+}
+
+@test "the default target is FILES_ROOT" {
+  archive="$(good_archive)"
+  unset FILES_RESTORE_TARGET
+  FILES_ROOT="$WORK/fresh" run backend_restore "$archive"
+  [ "$status" -eq 0 ]
+  [ -e "$WORK/fresh/a.xml" ]
+}
+
+@test "restore stops before extracting when verify fails" {
+  archive="$(good_archive)"
+  head -c 20 "$archive" >"$WORK/cut.tar.zst"
+  FILES_ROOT="$ROOT" FILES_RESTORE_TARGET="$WORK/target" run backend_restore "$WORK/cut.tar.zst"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not a valid zstd"* ]]
+  [ ! -e "$WORK/target" ] || [ -z "$(ls -A "$WORK/target")" ]
+}
