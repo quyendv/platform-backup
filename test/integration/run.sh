@@ -2,7 +2,7 @@
 # End-to-end: seed a real target, back it up to a real MinIO, destroy the data,
 # restore it, and assert the data came back.
 #
-# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb redis vault sqlite schedule notify upload_failure)
+# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb redis vault sqlite files schedule notify upload_failure)
 #
 # etcd is not covered here: it needs a real etcd with TLS on the host network,
 # and its restore runs outside the container by design. See backends/etcd/README.md.

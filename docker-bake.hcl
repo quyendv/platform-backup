@@ -9,7 +9,7 @@ variable "PLATFORMS" { default = "linux/amd64" }
 variable "SUPERCRONIC_VERSION" { default = "0.2.34" }
 
 group "default" {
-  targets = ["postgresql", "mongodb", "etcd", "vault", "redis", "sqlite"]
+  targets = ["postgresql", "mongodb", "etcd", "vault", "redis", "sqlite", "files"]
 }
 
 target "_common" {
@@ -84,5 +84,14 @@ target "sqlite" {
   tags = concat(
     ["${REGISTRY}/sqlite:latest"],
     TAG == "dev" ? [] : ["${REGISTRY}/sqlite:${TAG}"],
+  )
+}
+
+target "files" {
+  inherits   = ["_common"]
+  dockerfile = "backends/files/Dockerfile"
+  tags = concat(
+    ["${REGISTRY}/files:latest"],
+    TAG == "dev" ? [] : ["${REGISTRY}/files:${TAG}"],
   )
 }
