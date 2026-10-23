@@ -66,7 +66,7 @@ cleanup() {
     say "kept ${HOME_DIR} (the key copy inside it is shredded)"
     as_root 'shred -u /h/secrets/master.key 2>/dev/null || true' || true
   else
-    as_root 'shred -u /h/secrets/master.key 2>/dev/null || true; rm -rf /h/* /h/.[!.]* /w/*' >/dev/null 2>&1 || true
+    as_root 'shred -u /h/secrets/master.key 2>/dev/null || true; rm -rf /h/* /h/.[!.]* /w/*' || true
     rm -rf "$WORK"
   fi
 }
@@ -80,6 +80,9 @@ docker run --rm --env-file "$ENV_FILE" \
   --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
   "$FILES_IMAGE" || verdict_fail "restore failed"
 [[ -e "${HOME_DIR}/config.xml" ]] || verdict_fail "the restored home has no config.xml"
+# Every job and folder, multibranch branches and organisation folders included,
+# is a config.xml under jobs/ outside builds/: what Jenkins must load back.
+items_on_disk="$(as_root 'find /h/jobs -name builds -prune -o -name config.xml -print 2>/dev/null | wc -l')"
 
 say "2/5 add the key kept apart from the backup"
 docker run --rm -v "${HOME_DIR}:/h" -v "${KEY}:/key:ro" --entrypoint sh "$FILES_IMAGE" -c \
@@ -128,16 +131,28 @@ docker logs "$NAME" >"${WORK}/jenkins.log" 2>&1
 
 say "5/5 check what it loaded"
 say "    ${line}"
+grep '^DRILL-UNVERIFIED' "${WORK}/jenkins.log" | sort | uniq -c | sed 's/^/drill     /' || true
 count() { sed -nE "s/.* $1=([0-9]+).*/\1/p" <<<"$line"; }
-jobs="$(count jobs)" credentials="$(count credentials)" decrypted="$(count decrypted)"
+jobs="$(count jobs)" folders="$(count folders)" credentials="$(count credentials)"
+verifiable="$(count verifiable)" decrypted="$(count decrypted)"
 failed_plugins="$(grep -c 'Failed Loading plugin' "${WORK}/jenkins.log" || true)"
+failed_items="$(grep -c 'Failed Loading item' "${WORK}/jenkins.log" || true)"
 
 ((failed_plugins == 0)) || {
   grep 'Failed Loading plugin' "${WORK}/jenkins.log" | head -5
   verdict_fail "${failed_plugins} plugin(s) failed to load"
 }
-((decrypted == credentials)) ||
-  verdict_fail "${decrypted} of ${credentials} credentials decrypted: is this the key that belongs to the backup?"
+((failed_items == 0)) || {
+  grep 'Failed Loading item' "${WORK}/jenkins.log" | head -5
+  verdict_fail "${failed_items} item(s) failed to load"
+}
+((jobs + folders == items_on_disk)) ||
+  verdict_fail "Jenkins loaded ${jobs} jobs and ${folders} folders, the restored home holds ${items_on_disk}"
+((credentials == 0 || verifiable > 0)) ||
+  verdict_fail "none of the ${credentials} credentials could be checked, so the key is unproven"
+((decrypted == verifiable)) ||
+  verdict_fail "${decrypted} of ${verifiable} credentials decrypted: is this the key that belongs to the backup?"
 [[ -z "$EXPECT_JOBS" ]] || ((jobs == EXPECT_JOBS)) ||
   verdict_fail "${jobs} jobs restored, ${EXPECT_JOBS} expected"
-printf '\033[0;32mDRILL PASS\033[0m jobs=%s credentials=%s decrypted=%s\n' "$jobs" "$credentials" "$decrypted"
+printf '\033[0;32mDRILL PASS\033[0m jobs=%s folders=%s credentials=%s verifiable=%s decrypted=%s\n' \
+  "$jobs" "$folders" "$credentials" "$verifiable" "$decrypted"

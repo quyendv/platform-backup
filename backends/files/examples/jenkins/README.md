@@ -36,6 +36,8 @@ Taken (`FILES_INCLUDE`):
 | `secrets/` (without `master.key`) | the keys that encrypt credentials; useless without `master.key`, see [The key](#the-key) |
 | `jobs/` (without `builds/`) | every job and folder: `config.xml`, `nextBuildNumber`, and multibranch state (the last revision seen per branch, so a restore does not rebuild every branch) |
 | `plugins/*/META-INF/MANIFEST.MF` | name and version of each plugin, enough to install the same set again; the plugins themselves are downloaded, not backed up |
+| `?plugins/*.disabled`, `?plugins/*.pinned` | a plugin you disabled (for a security advisory, say) stays disabled after a restore |
+| `?jenkins.yaml`, `?init.groovy.d` | configuration as code, when you use it |
 | `?users`, `?nodes`, `?userContent`, `?fingerprints`, `?secret.key`, `?identity.key.enc`, `?.ssh/known_hosts`, `?.gitconfig` | users and API tokens, agents, user content, artifact fingerprints, legacy keys, the SSH host keys git trusts. `?` makes each optional: Jenkins creates some only once a feature is used (no `users/` until security is on) |
 
 Left out (`FILES_EXCLUDE`), and why:
@@ -46,6 +48,7 @@ Left out (`FILES_EXCLUDE`), and why:
 | `jobs/*/builds` | build records and logs, at every depth of folders and branches. The bulk of the home |
 | `jobs/*/workspace*` | workspaces of old freestyle jobs |
 | `*-atomic*tmp` | Jenkins' temp file while it saves `<file>`: measured as `config.xml-atomic<digits>tmp`, created next to the file it replaces |
+| `indexing/*.log`, `computation/*.log`, `*polling.log` | multibranch and organisation scan logs, SCM polling logs: Jenkins appends to them in place, so a branch scan or a webhook during the backup would fail the run (a file changed while read). The scan *state* (`indexing.xml`) is kept |
 | everything not included | `caches/`, `workspace/`, `tools/`, `.npm`, `.cache`, `logs/`, `updates/`, `war/`: regenerated |
 
 **Why build history is not kept, not even `build.xml`:** a tar exclusion beats
@@ -94,7 +97,7 @@ On the Jenkins host:
 ```bash
 cp .env.example .env     # JENKINS_HOME_DIR, the S3 settings; daily at 02:00 UTC, 15 runs kept
 docker compose up -d
-docker compose run --rm backup     # one run now; read its last lines
+docker compose run --rm backup run   # one run now, even with SCHEDULE set; read its last lines
 ```
 
 Then **count the run in the bucket**, not the container's status:
@@ -132,8 +135,14 @@ backup uses and **your kept copy of the key**, not one taken from the server:
 4. boots Jenkins **with no network** (`--network none`), executors set to 0
    and in quiet-down, so nothing restored can build, push, call a webhook or
    reach an agent;
-5. reads one line from its log, counts only, and passes when no plugin failed
-   to load, every credential decrypted, and the job count matches.
+5. reads one line from its log, counts only, and passes when: no plugin and no
+   item failed to load; Jenkins loaded as many jobs and folders as the restored
+   home holds `config.xml` files under `jobs/`; at least one credential could be
+   checked, and every one that could was decrypted; and the job count equals
+   `--expect-jobs` when given. A credential whose type exposes no readable
+   secret is listed by type (`DRILL-UNVERIFIED`), never by value.
+
+Restored `init.groovy.d` scripts run during the drill too, with no network.
 
 Everything it created is removed afterwards (the key copy is shredded).
 A login realm tied to the production URL (Google, GitHub, SSO) will not work on
@@ -142,8 +151,8 @@ the drill instance; the drill does not log in.
 With a wrong key it fails, which is the point:
 
 ```
-drill     DRILL jobs=5 folders=2 nodes=0 credentials=3 decrypted=0
-DRILL FAIL 0 of 3 credentials decrypted: is this the key that belongs to the backup?
+drill     DRILL jobs=5 folders=2 nodes=0 credentials=4 verifiable=4 decrypted=0
+DRILL FAIL 0 of 4 credentials decrypted: is this the key that belongs to the backup?
 ```
 
 Run it after deploying, after upgrading Jenkins, and on a calendar.
@@ -155,7 +164,9 @@ The drill's steps, on the real new host, with the network on:
 1. Install **the same Jenkins version**; do not start it.
 2. Restore into the empty home: set `RESTORE_TARGET_DIR` to it in `.env`, then
    `docker compose run --rm restore`. It refuses a non-empty directory.
-3. Put your kept `master.key` in `<home>/secrets/`.
+3. Put your kept `master.key` in `<home>/secrets/`, then
+   `chown -R jenkins:jenkins <home>`: owners were restored as numbers, which may
+   not be this host's `jenkins`.
 4. Reinstall the plugins, as root:
    ```bash
    cd <home>
@@ -166,9 +177,8 @@ The drill's steps, on the real new host, with the network on:
    docker run --rm --user "$(id -u jenkins)" -v "$PWD/plugins:/plugins" -v /tmp/plugins.txt:/p.txt:ro \
      --entrypoint jenkins-plugin-cli jenkins/jenkins:<version>-jdk21 --plugin-file /p.txt --plugin-download-directory /plugins
    ```
-5. `chown -R jenkins:jenkins <home>` (owners were restored as numbers, which may
-   not be this host's `jenkins`), start Jenkins, check the log for
-   `Failed Loading plugin`.
+5. Start Jenkins and check the log for `Failed Loading plugin` and
+   `Failed Loading item`.
 6. Reconnect it: the Jenkins URL (Manage Jenkins → System, stored in
    `jenkins.model.JenkinsLocationConfiguration.xml`), DNS, the login realm's
    redirect URI if the hostname changed, agents (inbound agents reconnect to the
@@ -182,7 +192,8 @@ home while Jenkins runs, stop it, copy the difference, start the new one.
 
 ```bash
 # 1. New host: same Jenkins version installed, stopped, empty home.
-# 2. First pass while the old controller keeps working (most of the bytes):
+# 2. First pass while the old controller keeps working (most of the bytes).
+#    Through a non-root SSH user, add --rsync-path='sudo rsync' so owners survive.
 sudo rsync -aHAX --numeric-ids /var/lib/jenkins/ new-host:/var/lib/jenkins/
 # 3. Stop taking work, wait for running builds, stop:
 #    Manage Jenkins -> Prepare for Shutdown (POST /quietDown), until no executor is busy
@@ -205,11 +216,16 @@ the numbering, and that credentials decrypt, from the script console:
 ```groovy
 import com.cloudbees.plugins.credentials.CredentialsProvider
 def j = jenkins.model.Jenkins.get()
+def blob = { it.replaceAll(/\s/, '') ==~ /^\{[A-Za-z0-9+\/=]+\}$/ }
+def values = { cr -> cr.class.methods.findAll { it.parameterCount == 0 && it.name.startsWith('get') }.collect { m ->
+  def v; try { v = m.invoke(cr) } catch (Throwable t) { return [] }
+  if (v instanceof hudson.util.Secret) return [v.plainText]
+  if (m.name ==~ /(?i)^get.*(key|password|secret|token|passphrase).*/ && v instanceof String) return [v]
+  [] }.flatten().findAll { it } }
 def ctx = [j] + j.getAllItems(com.cloudbees.hudson.plugins.folder.AbstractFolder)
 def n = 0, ok = 0
 ctx.each { c -> CredentialsProvider.lookupStores(c).findAll { it.context == c }.each { s -> s.domains.each { d -> s.getCredentials(d).each { cr ->
-  def v = cr.class.methods.findAll { it.parameterCount == 0 && hudson.util.Secret.isAssignableFrom(it.returnType) }.collect { it.invoke(cr)?.plainText }.findAll { it != null }
-  if (v) { n++; if (!v.any { it ==~ /^\{[A-Za-z0-9+\/=]+\}$/ }) ok++ } } } } }
+  n++; if (!values(cr).any(blob)) ok++ } } } }
 println("credentials=${n} decrypted=${ok} failed plugins=${j.pluginManager.failedPlugins.size()}")
 ```
 
@@ -225,17 +241,19 @@ bucket**, and a passed drill with your kept key.
 ## Verified
 
 2026-10-23, Jenkins 2.580.1 (the `jenkins/jenkins:2.580.1-jdk21` image), with
-nested folders, five pipeline jobs and ten builds, two system credentials and
-one folder credential, 51 plugins:
+nested folders, five pipeline jobs and ten builds, a secret text, a
+username/password and a passphrase-less SSH key at system level and a secret
+text on a folder, 51 plugins:
 
 ```
 backup:  91 entries, 15 147 bytes, run uploaded with its .sha256 and _COMPLETE, 11 s
-drill:   DRILL jobs=5 folders=2 nodes=0 credentials=3 decrypted=3
-         DRILL PASS (restore, 51 plugins reinstalled, boot, checks: 137 s)
+drill:   DRILL jobs=5 folders=2 nodes=0 credentials=4 verifiable=4 decrypted=4
+         DRILL PASS (restore, 51 plugins reinstalled, boot, checks: ~2 min)
          wrong key: decrypted=0, DRILL FAIL, exit 1; nothing left behind
+         a job with a corrupt config.xml: "1 item(s) failed to load", DRILL FAIL
 move:    pass 1: 2 039 files, 150 MB, 0.2 s while running; pass 2: 1 file
          new controller on the plain image: history 2 builds per job, old
-         console logs readable, credentials 3/3, 51 plugins, 0 failed,
+         console logs readable, credentials 3/3 (before the SSH key was added), 51 plugins, 0 failed,
          next build #3 SUCCESS
 real restore (steps 2-5 above): compose restore 91 entries, a second restore
          refused the non-empty home, 51 plugins reinstalled, 0 failed,

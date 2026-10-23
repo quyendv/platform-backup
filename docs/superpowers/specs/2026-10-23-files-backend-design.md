@@ -249,9 +249,11 @@ optional includes (`?entry`), because a fresh home has no `users/` until securit
 which its restore could not reach an object store on the Docker host. The selection as shipped:
 
 ```
-FILES_INCLUDE  *.xml secrets jobs plugins/*/META-INF/MANIFEST.MF ?secret.key ?identity.key.enc
-               ?users ?nodes ?userContent ?fingerprints ?.ssh/known_hosts ?.gitconfig
+FILES_INCLUDE  *.xml secrets jobs plugins/*/META-INF/MANIFEST.MF ?plugins/*.disabled ?plugins/*.pinned
+               ?secret.key ?identity.key.enc ?users ?nodes ?userContent ?fingerprints
+               ?.ssh/known_hosts ?.gitconfig ?jenkins.yaml ?init.groovy.d
 FILES_EXCLUDE  secrets/master.key jobs/*/builds jobs/*/workspace* *-atomic*tmp
+               indexing/*.log computation/*.log *polling.log
 FILES_REQUIRE  config.xml credentials.xml secrets/hudson.util.Secret
 FILES_FORBID   secrets/master.key
 ```
@@ -271,4 +273,24 @@ planned move (README):     rsync pass 1 while running (2 039 files, 150 MB, 0.2 
                            stop, pass 2 (1 file); plain image on the copy: history and old console
                            logs intact, credentials 3/3, 0 failed plugins, next build #3 SUCCESS
 ```
+
+## After the final review (2026-10-23)
+
+- tar escapes the names it prints (a colon, a backslash, non-ASCII in the C locale). An escaped name
+  cannot be looked up, so "no longer exists" cannot be trusted for it: a changed file whose name was
+  escaped fails the run. The archive listing used by verify is read with `--quoting-style=literal`
+  and without the `./` an include of `.` adds, so `FILES_REQUIRE` and `FILES_FORBID` compare real
+  paths.
+- Whether the directory is mounted and the selection still matches is checked in `backend_dump`,
+  not `backend_validate`: the driver validates before it starts recording a run, so a failure there
+  left no state file and sent no notification.
+- Restore looks into a symlinked target (`find "$dir/"`) before deciding it is empty.
+- The drill counts every credential, reads String secrets from key/password-named getters (an SSH
+  private key), strips line breaks before recognising a ciphertext (long ones are wrapped), fails
+  when no credential could be checked, and fails when Jenkins loads fewer jobs and folders than the
+  restored `jobs/**/config.xml` or logs `Failed Loading item`. Verified: right key 4/4 PASS, wrong
+  key 0/4 FAIL (it was 1/4 before the line-break fix, the SSH key), a corrupt job config FAIL.
+- The Jenkins selection keeps disabled/pinned plugin markers and configuration as code, and leaves
+  out the scan and polling logs Jenkins appends to in place (70 `indexing.log`, 25 `events.log`,
+  19 `github-polling.log` on the production home that motivated the example).
 
