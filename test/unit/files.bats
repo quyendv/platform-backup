@@ -38,8 +38,13 @@ seed_tree() {
   echo hosts >"$d/.ssh/known_hosts"
 }
 
+# The expansion is NUL-separated (a name may hold a newline); tests read lines.
+expand_lines() {
+  _files_expand | tr '\0' '\n'
+}
+
 expand_sorted() {
-  _files_expand | LC_ALL=C sort
+  expand_lines | LC_ALL=C sort
 }
 
 @test "validate fails without FILES_ROOT" {
@@ -91,7 +96,7 @@ expand_sorted() {
 
 @test "the default include is the whole root" {
   unset FILES_INCLUDE
-  FILES_ROOT="$ROOT" run _files_expand
+  FILES_ROOT="$ROOT" run expand_lines
   [ "$status" -eq 0 ]
   [ "$output" = "." ]
 }
@@ -103,7 +108,7 @@ expand_sorted() {
 }
 
 @test "a glob does not match dotfiles unless it names them" {
-  FILES_ROOT="$ROOT" FILES_INCLUDE='*' run _files_expand
+  FILES_ROOT="$ROOT" FILES_INCLUDE='*' run expand_lines
   [ "$status" -eq 0 ]
   [[ "$output" != *.ssh* ]]
 }
@@ -111,7 +116,7 @@ expand_sorted() {
 @test "3000 matched paths are listed in full" {
   mkdir -p "$ROOT/many"
   (cd "$ROOT/many" && seq 1 3000 | xargs touch)
-  FILES_ROOT="$ROOT" FILES_INCLUDE='many/*' run _files_expand
+  FILES_ROOT="$ROOT" FILES_INCLUDE='many/*' run expand_lines
   [ "$status" -eq 0 ]
   [ "${#lines[@]}" -eq 3000 ]
 }
@@ -402,7 +407,7 @@ fake_tar() {
 }
 
 @test "an include marked ? may match nothing" {
-  FILES_ROOT="$ROOT" FILES_INCLUDE='a.xml ?users ?nope/*' run _files_expand
+  FILES_ROOT="$ROOT" FILES_INCLUDE='a.xml ?users ?nope/*' run expand_lines
   [ "$status" -eq 0 ]
   [ "$output" = "a.xml" ]
 }
@@ -455,4 +460,50 @@ fake_tar() {
   run list_archive "$archive"
   [ "$status" -eq 0 ]
   [[ "$output" == *"my dir/f"* ]]
+}
+
+@test "a restore whose extraction fails says so, even under errexit" {
+  archive="$(good_archive)"
+  real_tar="$(command -v tar)"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  # Written into the stub verbatim, to expand when the stub runs.
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ "$a" == -x* ]] && exit 2; done\nexec %q "$@"\n' "$real_tar" >"$BATS_TEST_TMPDIR/bin/tar"
+  chmod +x "$BATS_TEST_TMPDIR/bin/tar"
+  run bash -c "set -euo pipefail; source '$REPO_ROOT/lib/log.sh'; source '$REPO_ROOT/lib/env.sh'; source '$REPO_ROOT/backends/files/backend.sh'
+    PATH='$BATS_TEST_TMPDIR/bin':\$PATH FILES_ROOT='$ROOT' FILES_RESTORE_TARGET='$WORK/target' backend_restore '$archive'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"tar failed (exit 2) extracting"* ]]
+}
+
+@test "a name starting with a dash is archived, not read as an option" {
+  echo d >"$ROOT/-v.xml"
+  archive="$(archive_of '*.xml')"
+  run list_archive "$archive"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"-v.xml"* ]]
+}
+
+@test "a name holding a newline is archived whole" {
+  echo n >"$ROOT/$(printf 'two\nlines.xml')"
+  archive="$(archive_of '*.xml')"
+  run bash -c "zstd -dc '$archive' | tar --quoting-style=escape -tf -"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'two\nlines.xml'* ]]
+}
+
+@test "a socket tar ignores does not spoil a benign exit 1" {
+  jenkins_selection
+  fake_tar 1 'jobs/x: file changed as we read it' 'jobs/x/agent.sock: socket ignored'
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -eq 0 ]
+}
+
+@test "an include outside FILES_ROOT is refused" {
+  FILES_ROOT="$ROOT" FILES_INCLUDE='a.xml /etc/hostname' RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"/etc/hostname"* ]]
+  FILES_ROOT="$ROOT" FILES_INCLUDE='jobs/../../x' RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"jobs/../../x"* ]]
 }

@@ -27,9 +27,12 @@ something unusable. Four variables express the selection:
   else. **Every entry must match something**: a typo or a moved file fails the
   run instead of quietly shrinking the backup. For what an application creates
   only once a feature is used, write the entry with one leading `?`
-  (`?fingerprints`): taken when present, skipped when not. (A glob that itself
-  starts with `?` is written `??…`.) Globs do not match dotfiles unless they
-  name them (`.ssh/known_hosts`).
+  (`?fingerprints`): taken when present, skipped when not. Because a leading
+  `?` means optional, a *required* glob cannot begin with the one-character
+  wildcard: write `[!/]` for that first character (`[!/]onfig.xml`);
+  `??onfig.xml` is the optional form. Globs do not match dotfiles unless they
+  name them (`.ssh/known_hosts`). Entries are relative to `FILES_ROOT`: an
+  absolute path, or one containing `..`, is refused.
 - **`FILES_EXCLUDE`** — GNU tar `--exclude` patterns. Wildcards cross `/` and a
   pattern matches at any depth, so `jobs/*/builds` also drops
   `jobs/a/jobs/b/builds`. **An exclusion beats an include**: a file named in
@@ -43,8 +46,10 @@ something unusable. Four variables express the selection:
   when `FILES_EXCLUDE` already leaves them out: that turns "the key is never in
   the backup" from a convention into a checked property.
 
-Paths containing whitespace cannot be written as they are; a glob reaches
-them (`my?dir` for `my dir`).
+Paths containing whitespace cannot be written as they are in `FILES_INCLUDE`;
+a glob reaches them (`my?dir` for `my dir`). `FILES_REQUIRE` takes exact paths,
+so it cannot name one. Names starting with `-` or holding a newline are
+archived like any other.
 
 ## How the copy is made
 

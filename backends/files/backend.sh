@@ -31,8 +31,8 @@ _files_words() {
   ((${#words[@]} == 0)) || printf '%s\n' "${words[@]}"
 }
 
-# _files_expand -> every path FILES_INCLUDE matches, relative to FILES_ROOT, one
-# per line. Dies naming the first entry that matches nothing: a typo or a moved
+# _files_expand -> every path FILES_INCLUDE matches, relative to FILES_ROOT,
+# each terminated by NUL (a name may hold a newline). Dies naming the first entry that matches nothing: a typo or a moved
 # file must fail the run, not quietly shrink the backup. An entry written with
 # one leading `?` is optional: the `?` is removed and the rest may match nothing
 # (an application creates some directories only once a feature is used).
@@ -53,6 +53,11 @@ _files_expand() {
         optional=true
         pattern="${pattern#\?}"
       fi
+      # tar archives an absolute name whatever -C says, and .. walks out: both
+      # would take files from outside the directory this backup is of.
+      if [[ "$pattern" == /* || "/${pattern}/" == */../* ]]; then
+        die "FILES_INCLUDE entry '${pattern}' leaves FILES_ROOT: write paths relative to it, without .."
+      fi
       # The pattern is meant to glob here, unquoted.
       # shellcheck disable=SC2206
       matches=($pattern)
@@ -60,7 +65,7 @@ _files_expand() {
         [[ "$optional" == true ]] && continue
         die "FILES_INCLUDE entry '${pattern}' matches nothing under ${FILES_ROOT}"
       fi
-      printf '%s\n' "${matches[@]}"
+      printf '%s\0' "${matches[@]}"
     done < <(_files_words FILES_INCLUDE)
   )
 }
@@ -114,6 +119,8 @@ _files_tar_benign() {
   while IFS= read -r line; do
     line="${line#tar: }"
     case "$line" in
+      # Printed even on success, and never a sign of a torn file.
+      *": socket ignored") continue ;;
       *": File removed before we read it") ;;
       *": file changed as we read it")
         path="${line%: file changed as we read it}"
@@ -144,7 +151,8 @@ backend_dump() {
   # Both statuses are read straight away. tar exit 1 means something changed or
   # vanished while it was read; a torn file uploaded as a good backup is worse
   # than a failed run, so only the changes _files_tar_benign accepts pass.
-  tar -C "$FILES_ROOT" --numeric-owner -cf - "${excludes[@]}" -T "$list" 2>"$errs" |
+  # NUL-terminated and verbatim: a name may start with '-' or hold a newline.
+  tar -C "$FILES_ROOT" --numeric-owner -cf - "${excludes[@]}" --null --verbatim-files-from -T "$list" 2>"$errs" |
     zstd -q -10 -T0 >"${dir}/${name}"
   codes=("${PIPESTATUS[@]}")
   rm -f -- "$list"
@@ -249,8 +257,13 @@ backend_restore() {
   fi
   log_warn "Restore writes into ${target}: the application must be stopped (a running one cannot be detected)"
 
-  zstd -dc -- "$archive" | tar -C "$target" -xf - --same-owner --numeric-owner --preserve-permissions
-  codes=("${PIPESTATUS[@]}")
+  # In an `if`, so errexit (on in the driver's restore) lets the statuses be
+  # read and named instead of ending the run without a message.
+  if zstd -dc -- "$archive" | tar -C "$target" -xf - --same-owner --numeric-owner --preserve-permissions; then
+    codes=(0 0)
+  else
+    codes=("${PIPESTATUS[@]}")
+  fi
   ((codes[0] == 0)) || die "zstd failed (exit ${codes[0]}) reading ${archive}"
   ((codes[1] == 0)) || die "tar failed (exit ${codes[1]}) extracting into ${target}"
 
