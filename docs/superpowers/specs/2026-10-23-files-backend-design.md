@@ -44,6 +44,11 @@ folders (`jobs/a/jobs/b/branches/c/builds`): 0 entries under any `/builds/` in t
 same defaults mean `secrets/master.key` also excludes `x/secrets/master.key`. For exclusion that
 breadth is the safe direction, and it is documented rather than changed.
 
+**An exclusion beats an explicit include.** A `build.xml` named in the `-T` list under an
+excluded `builds/` directory is still dropped. Keeping one kind of file out of an excluded subtree
+therefore means excluding its siblings by name instead; the README says so, and the Jenkins example
+does not try (its `builds/` hold over twenty kinds of plugin-written files).
+
 **A directory written by atomic rename reads cleanly.** Three consecutive runs during builds: tar
 exit 0, no warnings. The application writes its configuration as temp-file-then-rename, so tar
 reads either the old inode or the new one whole. The files written in place (build logs) were
@@ -139,7 +144,7 @@ in the same directory, and a restore has to bring plugins back too.
 
 | File | What it is |
 |---|---|
-| `README.md` | The procedure: what to select and why, keeping `secrets/master.key` out of the archive and where to keep it instead, deploying, restoring, the drill, and when an older backup may be retired |
+| `README.md` | The procedure: what to select and why, keeping `secrets/master.key` out of the archive and where to keep it instead, deploying, restoring, the drill, and when an older backup may be retired. Notes that a planned move is a stop-and-copy of the whole home, not a restore |
 | `.env.example` | The selection as variables (below), plus the shared S3 and schedule settings |
 | `compose.yaml` | The scheduled backup with the home bind-mounted read-only (`cap_drop: ALL`, `cap_add: DAC_READ_SEARCH`), and a `restore` profile |
 | `drill.sh` | The restore drill, automated, exit status 0 only if every check passes |
@@ -148,7 +153,7 @@ in the same directory, and a restore has to bring plugins back too.
 The selection:
 
 ```
-FILES_INCLUDE  *.xml secret.key identity.key.enc secrets users nodes jobs userContent
+FILES_INCLUDE  *.xml secret.key identity.key.enc secrets users nodes jobs userContent fingerprints
                plugins/*/META-INF/MANIFEST.MF .ssh/known_hosts .gitconfig
 FILES_EXCLUDE  secrets/master.key jobs/*/builds jobs/*/workspace*
 FILES_REQUIRE  config.xml credentials.xml secrets/hudson.util.Secret
