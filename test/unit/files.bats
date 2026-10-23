@@ -49,26 +49,31 @@ expand_sorted() {
   [[ "$output" == *FILES_ROOT* ]]
 }
 
-@test "validate fails when FILES_ROOT is a file" {
-  FILES_ROOT="$ROOT/a.xml" run backend_validate
+@test "validate does not look at the directory, so a missing one is reported by the run" {
+  FILES_ROOT="$ROOT/nope" FILES_INCLUDE='nope/*' run backend_validate
+  [ "$status" -eq 0 ]
+}
+
+@test "dump fails when FILES_ROOT is a file" {
+  FILES_ROOT="$ROOT/a.xml" RUN_ID=20260101_000000 run backend_dump "$WORK"
   [ "$status" -ne 0 ]
   [[ "$output" == *"not a directory"* ]]
 }
 
-@test "validate fails when FILES_ROOT does not exist" {
-  FILES_ROOT="$ROOT/nope" run backend_validate
+@test "dump fails when FILES_ROOT does not exist" {
+  FILES_ROOT="$ROOT/nope" RUN_ID=20260101_000000 run backend_dump "$WORK"
   [ "$status" -ne 0 ]
   [[ "$output" == *"not a directory"* ]]
 }
 
-@test "validate fails naming an include that matches nothing" {
-  FILES_ROOT="$ROOT" FILES_INCLUDE='*.xml nope/*' run backend_validate
+@test "dump fails naming an include that matches nothing" {
+  FILES_ROOT="$ROOT" FILES_INCLUDE='*.xml nope/*' RUN_ID=20260101_000000 run backend_dump "$WORK"
   [ "$status" -ne 0 ]
   [[ "$output" == *"nope/*"* ]]
 }
 
-@test "a literal include that does not exist fails" {
-  FILES_ROOT="$ROOT" FILES_INCLUDE='missing.xml' run backend_validate
+@test "a literal include that does not exist fails the dump" {
+  FILES_ROOT="$ROOT" FILES_INCLUDE='missing.xml' RUN_ID=20260101_000000 run backend_dump "$WORK"
   [ "$status" -ne 0 ]
   [[ "$output" == *missing.xml* ]]
 }
@@ -406,4 +411,48 @@ fake_tar() {
   FILES_ROOT="$ROOT" FILES_INCLUDE='?.ssh/known_hosts ?*.xml' run expand_sorted
   [ "$status" -eq 0 ]
   [ "$output" = "$(printf '.ssh/known_hosts\na.xml\nb.xml')" ]
+}
+
+@test "a changed file whose name tar escaped fails the dump" {
+  jenkins_selection
+  echo torn >"$ROOT/jobs/a:b"
+  fake_tar 1 'jobs/a\:b: file changed as we read it'
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" RUN_ID=20260101_000000 run backend_dump "$WORK"
+  [ "$status" -ne 0 ]
+}
+
+@test "restore refuses a symlinked target that is not empty" {
+  archive="$(good_archive)"
+  mkdir -p "$WORK/live"
+  echo NEWER >"$WORK/live/a.xml"
+  ln -s "$WORK/live" "$WORK/tgt"
+  FILES_ROOT="$ROOT" FILES_RESTORE_TARGET="$WORK/tgt" run backend_restore "$archive"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *FILES_RESTORE_OVERWRITE* ]]
+  [ "$(cat "$WORK/live/a.xml")" = NEWER ]
+}
+
+@test "the default include satisfies FILES_REQUIRE and FILES_FORBID" {
+  archive="$(archive_of '.')"
+  FILES_REQUIRE='a.xml jobs/x/config.xml' run backend_verify "$archive"
+  [ "$status" -eq 0 ]
+  FILES_FORBID='secrets/master.key' run backend_verify "$archive"
+  [ "$status" -ne 0 ]
+}
+
+@test "FILES_FORBID matches a non-ASCII name in the C locale" {
+  echo k >"$ROOT/secrets/clé.key"
+  archive="$(archive_of 'secrets' 'secrets/master.key')"
+  LC_ALL=C FILES_FORBID='secrets/clé.key' run backend_verify "$archive"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *FILES_FORBID* ]]
+}
+
+@test "a glob reaches a path containing spaces" {
+  mkdir -p "$ROOT/my dir"
+  echo f >"$ROOT/my dir/f"
+  archive="$(archive_of 'my?dir')"
+  run list_archive "$archive"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"my dir/f"* ]]
 }

@@ -79,10 +79,17 @@ backend_validate() {
       return 0
       ;;
   esac
+  # Only configuration here. Whether the directory is mounted and the selection
+  # still matches is runtime state, checked by backend_dump: the driver calls
+  # this before it starts recording a run, so a failure here would leave no
+  # state file and send no notification.
   require_env FILES_ROOT
+}
+
+# _files_check_root: FILES_ROOT is a directory this process can read.
+_files_check_root() {
   [[ -d "$FILES_ROOT" ]] || die "FILES_ROOT ${FILES_ROOT} is not a directory (is it mounted?)"
   [[ -r "$FILES_ROOT" && -x "$FILES_ROOT" ]] || die "FILES_ROOT ${FILES_ROOT} is not readable by uid $(id -u)"
-  _files_expand >/dev/null
 }
 
 # _files_excludes -> one --exclude=PATTERN argument per FILES_EXCLUDE entry.
@@ -110,6 +117,10 @@ _files_tar_benign() {
       *": File removed before we read it") ;;
       *": file changed as we read it")
         path="${line%: file changed as we read it}"
+        # tar escapes names it prints (a colon, a backslash, non-ASCII in the C
+        # locale). An escaped name cannot be looked up, and "not found" would
+        # read as "renamed away": fail closed instead.
+        [[ "$path" != *\\* ]] || return 1
         if [[ -e "${FILES_ROOT}/${path}" || -L "${FILES_ROOT}/${path}" ]]; then
           [[ -d "${FILES_ROOT}/${path}" && ! -L "${FILES_ROOT}/${path}" ]] || return 1
         fi
@@ -126,6 +137,7 @@ backend_dump() {
   local -a excludes codes
 
   log_info "$(tar --version | sed -n 1p), $(zstd --version)"
+  _files_check_root
   _files_expand >"$list" || die "Expanding FILES_INCLUDE failed"
   mapfile -t excludes < <(_files_excludes)
 
@@ -153,7 +165,10 @@ backend_dump() {
 _files_listing() {
   local archive="$1"
   local -a codes
-  zstd -dc -- "$archive" | tar -tf - | sed 's|/$||'
+  # Literal names, not tar's escaped ones, so FILES_REQUIRE and FILES_FORBID
+  # compare against the real paths whatever the locale; and without the "./"
+  # an include of "." puts in front of every member.
+  zstd -dc -- "$archive" | tar --quoting-style=literal -tf - | sed -e 's|^\./||' -e 's|/$||' -e '/^\.\{0,1\}$/d'
   codes=("${PIPESTATUS[@]}")
   ((codes[0] == 0 && codes[1] == 0)) || {
     printf 'Cannot list %s (zstd exit %s, tar exit %s)\n' "$archive" "${codes[0]}" "${codes[1]}" >&2
@@ -213,7 +228,12 @@ backend_verify() {
 # _files_target_empty DIR: status 0 when DIR holds nothing but lost+found, which
 # a freshly formatted volume always has.
 _files_target_empty() {
-  [[ -z "$(find "$1" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit)" ]]
+  local first
+  # The trailing slash makes find enter a symlinked target instead of looking
+  # at the link itself, which has no entries and would read as empty.
+  first="$(find "$1/" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit)" ||
+    die "Cannot read the restore target $1"
+  [[ -z "$first" ]]
 }
 
 backend_restore() {
