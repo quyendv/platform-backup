@@ -23,7 +23,7 @@ services:
       context: .
       dockerfile: backends/postgresql/Dockerfile
       args:
-        PG_VERSION: "17"
+        PG_VERSION: "18"
     env_file:
       - path: backends/postgresql/.env
         required: false

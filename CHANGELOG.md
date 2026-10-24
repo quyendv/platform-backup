@@ -9,6 +9,31 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-24
+
+### Changed
+
+- **postgresql: images for PostgreSQL 15-18; `latest` is now pg18.** Anyone
+  on `latest` (or the `postgresql` compose service) against a 15, 16 or 17
+  server must pin the matching tag: a newer image cannot restore into an older
+  server, because `pg_restore` 17 and later always sends
+  `SET transaction_timeout`, which 15 and 16 reject. Each end of the range is
+  now covered by the integration suite with its own tag, data, roles and grants.
+- **postgresql: no pg14 image.** PostgreSQL 14 reaches end of life on
+  2026-11-12. `0.7.0-pg14` stays published. Migration: the `pg15` image backs
+  up and restores a 14 server (checked with data, roles and grants), so a 14
+  deployment can move to `0.8.0-pg15` before its server is upgraded.
+- **etcd: etcdctl 3.5.35 → 3.7.3, plus etcdutl.** Verification now runs
+  `etcdutl snapshot status`, which reads the file offline; etcdctl 3.6
+  dropped its own. The restore instructions use `etcdutl snapshot restore`
+  (`etcdctl snapshot restore` is gone in 3.6), and the image's etcdutl can
+  serve a host that has none. etcd is now in the integration suite: against
+  3.5.35, 3.6.16 and 3.7.3 servers over TLS with client certificates, each
+  snapshot is saved, verified, uploaded, fetched, restored with etcdutl, and a
+  member of the same version is started on the result and read back.
+- The `develop` branch is gone: work lands on `main` through pull requests,
+  and the moving tags are rebuilt from `main` only.
+
 ## [0.7.0] — 2026-10-24
 
 ### Security

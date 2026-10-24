@@ -6,10 +6,18 @@
 
 ## Choosing a tag
 
-Tags follow the **server** major version: `pg14` … `pg17`, and `latest` = pg17.
-`pg_dump` refuses to dump a server newer than itself, so a `pg16` image cannot
-back up a PostgreSQL 17 server. Match the tag to the server, not to whatever is
-newest.
+Tags follow the **server** major version: `pg15` … `pg18`, and `latest` = pg18.
+Match the tag to the server, not to whatever is newest, in both directions:
+
+- `pg_dump` refuses to dump a server newer than itself, so a `pg17` image cannot
+  back up a PostgreSQL 18 server;
+- `pg_restore` 17 and later always sends `SET transaction_timeout`, which a 15
+  or 16 server rejects, so a newer image's restore into an older server fails.
+
+PostgreSQL 14 reaches end of life on 2026-11-12 and has no image from 0.8.0 on.
+`0.7.0-pg14` stays published. The `pg15` image also backs up and restores a
+14 server (checked on 14 with data, roles and grants), which is the way to
+move a 14 deployment onto current images ahead of a server upgrade.
 
 ## Variables
 
@@ -77,8 +85,8 @@ docker compose run --rm restore        # download + verify into ./restore
 docker compose run --rm -e MODE=restore -e RESTORE_DROP=true restore
 ```
 
-Pick the image tag to match the server's major version (`0.7.0-pg14` …
-`0.7.0-pg17`), as described under [Choosing a tag](#choosing-a-tag).
+Pick the image tag to match the server's major version (`0.8.0-pg15` …
+`0.8.0-pg18`), as described under [Choosing a tag](#choosing-a-tag).
 
 With `SCHEDULE` set, `docker compose up -d` leaves the container running and
 backing up on that cron; add `RESTART_POLICY=unless-stopped` to `.env` so it

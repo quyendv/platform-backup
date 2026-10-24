@@ -11,7 +11,7 @@
 
 name: platform-backup-files
 
-x-image: &image ghcr.io/quyendv/platform-backup/files:0.7.0
+x-image: &image ghcr.io/quyendv/platform-backup/files:0.8.0
 
 x-files: &files
   image: *image

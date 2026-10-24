@@ -10,17 +10,17 @@ restore its own data.
 
 | Image | Release tags | Moving tags |
 |---|---|---|
-| `ghcr.io/quyendv/platform-backup/postgresql` | `0.7.0-pg14` … `0.7.0-pg17` | `pg14` `pg15` `pg16` `pg17` `latest` (= pg17) |
-| `ghcr.io/quyendv/platform-backup/mongodb` | `0.7.0` | `latest` |
-| `ghcr.io/quyendv/platform-backup/etcd` | `0.7.0` | `latest` |
-| `ghcr.io/quyendv/platform-backup/vault` | `0.7.0` | `latest` |
-| `ghcr.io/quyendv/platform-backup/redis` | `0.7.0-redis7` `0.7.0-redis8` | `redis7` `redis8` `latest` (= redis8) |
-| `ghcr.io/quyendv/platform-backup/sqlite` | `0.7.0` | `latest` |
-| `ghcr.io/quyendv/platform-backup/files` | `0.7.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/postgresql` | `0.8.0-pg15` … `0.8.0-pg18` | `pg15` `pg16` `pg17` `pg18` `latest` (= pg18) |
+| `ghcr.io/quyendv/platform-backup/mongodb` | `0.8.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/etcd` | `0.8.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/vault` | `0.8.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/redis` | `0.8.0-redis7` `0.8.0-redis8` | `redis7` `redis8` `latest` (= redis8) |
+| `ghcr.io/quyendv/platform-backup/sqlite` | `0.8.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/files` | `0.8.0` | `latest` |
 
-Release tags never move. Moving tags are rebuilt on every push to `main` and
-`develop`, so they can carry unreleased changes: pin a release tag for anything
-you depend on, as the shipped compose files and manifests do.
+Release tags never move. Moving tags are rebuilt on every push to `main`, so
+they can carry unreleased changes: pin a release tag for anything you depend
+on, as the shipped compose files and manifests do.
 
 Each backend documents itself next to its own code:
 [postgresql](backends/postgresql/) · [mongodb](backends/mongodb/) ·
@@ -86,7 +86,7 @@ it builds the images from this checkout.
 
 etcd refuses `restore`: restoring etcd rewrites the data directory of a
 *stopped* member, so it cannot be done from a container against a live cluster.
-The image says so and prints the `etcdctl` command to run on the host.
+The image says so and prints the `etcdutl` command to run on the host.
 
 \* redis restores over plain connections only, and refuses a Redis Cluster
 outright — a cluster shards its keyspace, so one endpoint holds a fraction of
@@ -281,7 +281,7 @@ Timestamps are UTC. Every file carries a SHA-256 sidecar, and `fetch` and
 
 Each backend also verifies its own artifact before the run is promoted —
 `pg_restore --list` for postgresql, `gzip -t` for mongodb and vault,
-`etcdctl snapshot status` for etcd, `redis-check-rdb` for redis. A size floor cannot do this job: a real
+`etcdutl snapshot status` for etcd, `redis-check-rdb` for redis. A size floor cannot do this job: a real
 dump of an empty database is only a few hundred bytes, so any threshold high
 enough to catch a truncated archive would reject a legitimate backup.
 
@@ -323,7 +323,7 @@ or trigger the **arm64** workflow from the Actions tab, which does the same on
 a runner and pushes nothing.
 
 Building is not the interesting part — layers assemble for any architecture.
-`test/smoke.sh` runs `pg_dump`, `mongodump`, `etcdctl`, `vault`, `aws` and
+`test/smoke.sh` runs `pg_dump`, `mongodump`, `etcdctl`, `etcdutl`, `vault`, `aws` and
 `supercronic` inside the image under emulation, which is what actually catches
 a package with no build for that arch or a binary fetched for the wrong one.
 It works on amd64 too:

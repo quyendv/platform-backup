@@ -73,6 +73,36 @@ STUB
   [[ "$output" == *"snapshot save failed"* ]]
 }
 
+# etcdctl 3.6 dropped `snapshot status`; etcdutl reads the file offline, so the
+# check needs neither an endpoint nor the client certificates.
+@test "etcd verifies the snapshot file with etcdutl" {
+  source "$REPO_ROOT/backends/etcd/backend.sh"
+  cat >"$STUB_BIN/etcdutl" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >"$BATS_TEST_TMPDIR/etcdutl-args"
+STUB
+  chmod +x "$STUB_BIN/etcdutl"
+  stub etcdctl 1
+
+  run backend_verify "$WORK/etcd-20260101_000000.db"
+
+  [ "$status" -eq 0 ]
+  run cat "$BATS_TEST_TMPDIR/etcdutl-args"
+  [[ "$output" == "snapshot status $WORK/etcd-20260101_000000.db -w table" ]]
+}
+
+@test "etcd verification fails when etcdutl cannot read the snapshot" {
+  source "$REPO_ROOT/backends/etcd/backend.sh"
+  export ETCDCTL_ENDPOINTS=https://x ETCDCTL_CACERT=/dev/null
+  export ETCDCTL_CERT=/dev/null ETCDCTL_KEY=/dev/null
+  stub etcdctl 0
+  stub etcdutl 1
+
+  run backend_verify "$WORK/etcd-20260101_000000.db"
+
+  [ "$status" -ne 0 ]
+}
+
 @test "vault fails when the snapshot fails" {
   source "$REPO_ROOT/backends/vault/backend.sh"
   export VAULT_ADDR=http://x VAULT_TOKEN=t

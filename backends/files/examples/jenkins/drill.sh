@@ -17,7 +17,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEY="" IMAGE="" EXPECT_JOBS="" ENV_FILE="${HERE}/.env" KEEP=false
-FILES_IMAGE="ghcr.io/quyendv/platform-backup/files:0.7.0"
+FILES_IMAGE="ghcr.io/quyendv/platform-backup/files:0.8.0"
 # The official image runs Jenkins as uid 1000; the restored home is given to it.
 JENKINS_UID=1000
 BOOT_TIMEOUT=300

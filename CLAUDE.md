@@ -179,12 +179,14 @@ build that will load it; and charts routinely disable `FLUSHDB`.
 
 ## Branching
 
-`develop` is where work lands; `main` only ever moves by merging from `develop`.
-Never commit straight to `main` — it is the default branch and the one release
-tags are cut from.
+`main` and release tags only. Work happens on a short-lived branch
+(`feat/…`, `fix/…`) and lands on `main` through a pull request; never commit
+straight to `main`. Pushes to `main` rebuild the moving tags (`latest`, `pg18`…),
+so whatever merges there is published at once — the release tags are what
+anyone should depend on.
 
-CI runs on both. Release tags are per-backend (`postgresql/v1.2.0`) and are cut
-from `main`.
+Release tags are cut from `main`: repo-wide (`v0.8.0`, every backend) or
+per-backend (`postgresql/v1.2.0`).
 
 ## CI
 
@@ -192,7 +194,7 @@ from `main`.
 (amd64, no push on PRs). A change under `lib/`, `entrypoint.sh` or
 `docker-bake.hcl` rebuilds all of them.
 
-`release.yml` fires on a per-backend tag (`postgresql/v1.2.0`) and is the only
+`release.yml` fires on a release tag (`v0.8.0` or `postgresql/v1.2.0`) and is the only
 place arm64 is *published* — emulated arm64 is slow and the postgres matrix
 multiplies it by four.
 

@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# etcd backup image. Alpine keeps it small; etcdctl is pinned so it can be
-# matched to the cluster's major/minor version.
-ARG ETCD_VERSION=3.5.35
+# etcd backup image. Alpine keeps it small. etcdctl takes the snapshot over the
+# client API, which is stable across 3.x servers; etcdutl verifies the file
+# offline and is the tool that restores it on the member host.
+ARG ETCD_VERSION=3.7.3
 ARG SUPERCRONIC_VERSION=0.2.51
 
 FROM alpine:3.24
@@ -29,8 +30,11 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN set -eux; \
   curl -fsSL "https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/etcd-v${ETCD_VERSION}-linux-${TARGETARCH}.tar.gz" \
-  | tar -xz -C /usr/local/bin --strip-components=1 "etcd-v${ETCD_VERSION}-linux-${TARGETARCH}/etcdctl"; \
-  etcdctl version
+  | tar -xz -C /usr/local/bin --strip-components=1 \
+    "etcd-v${ETCD_VERSION}-linux-${TARGETARCH}/etcdctl" \
+    "etcd-v${ETCD_VERSION}-linux-${TARGETARCH}/etcdutl"; \
+  etcdctl version; \
+  etcdutl version
 
 RUN set -eux; \
   curl -fsSL -o /usr/local/bin/supercronic \
