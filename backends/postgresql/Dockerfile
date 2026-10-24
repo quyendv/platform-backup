@@ -3,9 +3,9 @@
 # PostgreSQL backup image. Built once per server major version: pg_dump refuses
 # to dump a server newer than itself, so the tag must match the target.
 ARG PG_VERSION=17
-ARG SUPERCRONIC_VERSION=0.2.34
+ARG SUPERCRONIC_VERSION=0.2.51
 
-FROM debian:bookworm-slim AS awscli
+FROM debian:trixie-slim AS awscli
 ARG TARGETARCH
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl unzip ca-certificates \
@@ -20,7 +20,7 @@ RUN set -eux; \
   unzip -q /tmp/aws.zip -d /tmp; \
   /tmp/aws/install --install-dir /aws-cli --bin-dir /aws-cli/bin
 
-FROM debian:bookworm-slim AS supercronic
+FROM debian:trixie-slim AS supercronic
 ARG TARGETARCH
 ARG SUPERCRONIC_VERSION
 RUN apt-get update \
@@ -30,7 +30,7 @@ RUN curl -fsSL -o /usr/local/bin/supercronic \
   "https://github.com/aptible/supercronic/releases/download/v${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" \
   && chmod +x /usr/local/bin/supercronic
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 ARG PG_VERSION
 # Recorded in every run's _COMPLETE marker, so a backup says what wrote it.
 ARG VERSION=dev
@@ -53,7 +53,7 @@ RUN apt-get update \
   bash ca-certificates curl gnupg gzip findutils util-linux jq \
   && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
   | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
-  && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+  && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt trixie-pgdg main" \
   > /etc/apt/sources.list.d/pgdg.list \
   && apt-get update \
   && apt-get install -y --no-install-recommends "postgresql-client-${PG_VERSION}" \

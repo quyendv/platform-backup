@@ -129,7 +129,7 @@ spec:
             - name: vault-agent
               # Any recent agent works against any recent server; matching the
               # server's version is the conservative choice.
-              image: hashicorp/vault:1.18
+              image: hashicorp/vault:2.2
               args: ["agent", "-config=/vault/config/agent.hcl"]
               env:
                 - name: VAULT_ADDR
@@ -147,7 +147,7 @@ spec:
                   mountPath: /vault/token
           containers:
             - name: backup
-              image: ghcr.io/quyendv/platform-backup/vault:0.6.3
+              image: ghcr.io/quyendv/platform-backup/vault:0.7.0
               imagePullPolicy: IfNotPresent
               envFrom:
                 - secretRef:

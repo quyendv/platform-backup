@@ -1,0 +1,65 @@
+# Directory backups on a Docker host, scheduled or one-shot. ../README.md,
+# section "Docker", has the walkthrough; ../examples/jenkins/ is a worked case.
+#
+#   cp ../.env.example .env                  # FILES_*, FILES_SOURCE, S3, SCHEDULE
+#   docker compose up -d                     # SCHEDULE set: backs up on it
+#                                            # SCHEDULE empty: one backup, exits
+#   docker compose run --rm backup run       # one backup now
+#   docker compose run --rm restore          # newest run into FILES_RESTORE_DIR
+#
+# The source is mounted read-only: a backup never writes to it.
+
+name: platform-backup-files
+
+x-image: &image ghcr.io/quyendv/platform-backup/files:0.7.0
+
+x-files: &files
+  image: *image
+  env_file: .env
+  extra_hosts:
+    # Lets AWS_ENDPOINT_URL_S3=http://host.docker.internal:9000 reach an object
+    # store on this host.
+    - "host.docker.internal:host-gateway"
+
+services:
+  backup:
+    <<: *files
+    # Root, as the image runs, able to read every file and nothing more.
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH]
+    volumes:
+      # Persistent, so .last-run.json survives restarts: the HEALTHCHECK and
+      # NOTIFY_ON=change both read it.
+      - backup:/backup
+      - ${FILES_SOURCE:?set FILES_SOURCE in .env to the directory to back up}:/data:ro
+    # SCHEDULE set: the container stays up and backs up on that cron; set
+    # RESTART_POLICY=unless-stopped too, so it survives a reboot. SCHEDULE
+    # empty: one backup, then it exits — keep the policy at "no", or the
+    # restart policy turns one backup into a loop.
+    restart: ${RESTART_POLICY:-no}
+
+  # Manual runs only. Kept apart from `backup` so a restore never writes the
+  # scheduled job's state file. It extracts into FILES_RESTORE_DIR, never into
+  # the live source: an empty directory unless FILES_RESTORE_OVERWRITE=true.
+  #   docker compose run --rm restore
+  #   docker compose run --rm -e MODE=fetch restore         # download + verify only
+  restore:
+    <<: *files
+    profiles: [manual]
+    # Writing owners and modes back needs these three.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    environment:
+      MODE: restore
+      SCHEDULE: ""
+      BACKUP_DIR: /tmp/backup
+      RESTORE_DIR: /restore
+      FILES_RESTORE_TARGET: /target
+      NOTIFY_ON: never
+    volumes:
+      - ${FILES_RESTORE_DIR:-./restored}:/target
+      - ./fetched:/restore
+    restart: "no"
+
+volumes:
+  backup:

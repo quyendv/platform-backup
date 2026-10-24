@@ -6,10 +6,10 @@ variable "TAG" { default = "dev" }
 # CI overrides this to linux/amd64,linux/arm64 on release tags only: emulated
 # arm64 builds are slow, and the postgres matrix multiplies that by four.
 variable "PLATFORMS" { default = "linux/amd64" }
-variable "SUPERCRONIC_VERSION" { default = "0.2.34" }
+variable "SUPERCRONIC_VERSION" { default = "0.2.51" }
 
 group "default" {
-  targets = ["postgresql", "mongodb", "etcd", "vault", "redis", "sqlite"]
+  targets = ["postgresql", "mongodb", "etcd", "vault", "redis", "sqlite", "files"]
 }
 
 target "_common" {
@@ -84,5 +84,14 @@ target "sqlite" {
   tags = concat(
     ["${REGISTRY}/sqlite:latest"],
     TAG == "dev" ? [] : ["${REGISTRY}/sqlite:${TAG}"],
+  )
+}
+
+target "files" {
+  inherits   = ["_common"]
+  dockerfile = "backends/files/Dockerfile"
+  tags = concat(
+    ["${REGISTRY}/files:latest"],
+    TAG == "dev" ? [] : ["${REGISTRY}/files:${TAG}"],
   )
 }

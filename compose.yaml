@@ -97,9 +97,28 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
 
+  files:
+    <<: *backup
+    profiles: [files]
+    image: ghcr.io/quyendv/platform-backup/files:latest
+    build:
+      context: .
+      dockerfile: backends/files/Dockerfile
+    env_file:
+      - path: backends/files/.env
+        required: false
+    volumes:
+      - files_backup:/backup
+      # The directory to back up, read-only. The image runs as root; keep only
+      # the capability it needs to read every file (README.md).
+      # - ./data:/data:ro
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH]
+
 volumes:
   postgresql_backup:
   mongodb_backup:
   etcd_backup:
   vault_backup:
   sqlite_backup:
+  files_backup:

@@ -1,0 +1,114 @@
+# Scheduled files backup. Replace the <placeholders> and fill in the Secret.
+#
+#   kubectl apply -f backends/files/k8s/cronjob.yaml
+#   kubectl create job --from=cronjob/files-backup files-backup-now -n <your-namespace>
+#
+# The pod mounts the application's volume read-only. With a ReadWriteOnce volume
+# it must run on the same node as the application: the podAffinity below does
+# that. It runs as root with one capability, DAC_READ_SEARCH, so it can read
+# every file whatever its owner and change nothing (see README.md).
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: files-backup
+  namespace: <your-namespace>
+type: Opaque
+stringData:
+  # ── files ──────────────────────────────────────────────────────────────────
+  # The directory as mounted below; every other path is relative to it.
+  FILES_ROOT: "/data"
+  # Paths or globs to take, to leave out, that must be there, that must never
+  # be there. See README.md for the matching rules.
+  FILES_INCLUDE: "."
+  FILES_EXCLUDE: ""
+  FILES_REQUIRE: ""
+  FILES_FORBID: ""
+
+  # ── Object storage ─────────────────────────────────────────────────────────
+  # Read by the AWS CLI itself. Omit both keys entirely to authenticate with an
+  # IRSA service account or an instance role instead.
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+  AWS_REGION: "us-east-1"
+  # Required for MinIO / Ceph / R2 / Spaces; omit for real AWS.
+  AWS_ENDPOINT_URL_S3: "https://minio.example.com"
+
+  # Read by this image.
+  S3_BUCKET: "your-bucket"
+  S3_PREFIX: "backups/files"
+
+  # ── Retention ──────────────────────────────────────────────────────────────
+  # Counts, not days. 0 disables pruning on that side. KEEP_LOCAL barely
+  # matters here: every run gets a fresh pod, so the local copy is scratch.
+  KEEP_LOCAL: "1"
+  KEEP_REMOTE: "30"
+
+  # ── Notifications ──────────────────────────────────────────────────────────
+  # Leave NOTIFY_ON as "failure": each run is a fresh pod with an emptyDir, so
+  # the state file never survives and "previous outcome" is always unknown.
+  NOTIFY_ON: "failure"
+  # NOTIFY_TELEGRAM_BOT_TOKEN: ""
+  # NOTIFY_TELEGRAM_CHAT_ID: ""
+  # NOTIFY_SLACK_WEBHOOK_URL: ""
+  # NOTIFY_GOOGLE_CHAT_WEBHOOK_URL: ""
+  # NOTIFY_DISCORD_WEBHOOK_URL: ""
+  # NOTIFY_WEBHOOK_URL: ""
+  # NOTIFY_SMTP_URL: "smtps://user:password@smtp.example.com:465"
+  # NOTIFY_SMTP_FROM: "backup@example.com"
+  # NOTIFY_SMTP_TO: "ops@example.com"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: files-backup
+  namespace: <your-namespace>
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      # A backup that cannot succeed should surface, not retry all day.
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          affinity:
+            # ReadWriteOnce: the volume is attached to one node at a time.
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/instance: <your-app>
+                  topologyKey: kubernetes.io/hostname
+          containers:
+            - name: backup
+              image: ghcr.io/quyendv/platform-backup/files:0.7.0
+              imagePullPolicy: Always
+              envFrom:
+                - secretRef:
+                    name: files-backup
+              securityContext:
+                runAsUser: 0
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+                  # Read any file regardless of its owner; nothing else.
+                  add: [DAC_READ_SEARCH]
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: <your-app-data>
+                readOnly: true
+            # Scratch for this run only. The Job's own status is what reports a
+            # failure to the cluster; KEEP_REMOTE is what retains history.
+            - name: backup
+              emptyDir: {}

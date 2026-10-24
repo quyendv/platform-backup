@@ -2,7 +2,7 @@
 # End-to-end: seed a real target, back it up to a real MinIO, destroy the data,
 # restore it, and assert the data came back.
 #
-# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb redis vault sqlite schedule notify upload_failure)
+# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb redis vault sqlite files schedule notify upload_failure)
 #
 # etcd is not covered here: it needs a real etcd with TLS on the host network,
 # and its restore runs outside the container by design. See backends/etcd/README.md.
@@ -26,6 +26,8 @@ cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
   docker rm -f "${PROJECT}-sqlite-writer" >/dev/null 2>&1 || true
   docker volume rm -f "${PROJECT}_sqlite_data" "${PROJECT}_sqlite_fetch" >/dev/null 2>&1 || true
+  docker rm -f "${PROJECT}-files-writer" >/dev/null 2>&1 || true
+  docker volume rm -f "${PROJECT}_files_data" "${PROJECT}_files_target" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -712,9 +714,132 @@ test_sqlite() {
   pass "sqlite: the old database and WAL are kept, and the application owns and writes the new one"
 }
 
+# The files target is a directory in a volume. The image itself (bash, GNU tar,
+# zstd) doubles as the tool that seeds, writes to and inspects it.
+FILES_IMAGE=ghcr.io/quyendv/platform-backup/files:latest
+FILES_DATA="${PROJECT}_files_data"
+FILES_TARGET="${PROJECT}_files_target"
+
+# files_sh VOLUME:PATH... -- SCRIPT: bash in the image with the volumes mounted.
+files_sh() {
+  local -a mounts=()
+  while [[ "$1" != -- ]]; do
+    mounts+=(-v "$1")
+    shift
+  done
+  shift
+  docker run --rm "${mounts[@]}" --entrypoint bash "$FILES_IMAGE" -c "$1"
+}
+
+files_runs() {
+  s3_ls "s3://${BUCKET}/it/files/" 2>/dev/null | grep -cE 'PRE [0-9]{8}_[0-9]{6}/' || true
+}
+
+test_files() {
+  local prefix=it/files before after out
+  # The selection of the Jenkins example, on a tree of the same shape.
+  local select=(-e FILES_ROOT=/data
+    -e "FILES_INCLUDE=*.xml jobs secrets plugins/*/META-INF/MANIFEST.MF link"
+    -e "FILES_EXCLUDE=secrets/master.key jobs/*/builds"
+    -e "FILES_REQUIRE=config.xml secrets/hudson.util.Secret"
+    -e FILES_FORBID=secrets/master.key)
+  local backup_env=(-v "${FILES_DATA}:/data:ro" --cap-drop ALL --cap-add DAC_READ_SEARCH)
+
+  info "files: a home owned by the application, builds at three depths, a key, a symlink"
+  docker volume create "$FILES_DATA" >/dev/null
+  docker volume create "$FILES_TARGET" >/dev/null
+  # Runs inside the container: expands there.
+  # shellcheck disable=SC2016
+  files_sh "${FILES_DATA}:/data" -- '
+    set -e
+    cd /data
+    mkdir -p jobs/a/jobs/b/branches/c/builds/7 jobs/a/builds/1 jobs/d/builds/2 jobs/w \
+      plugins/p1/META-INF secrets
+    echo root >config.xml
+    echo creds >credentials.xml
+    echo a >jobs/a/config.xml
+    echo c >jobs/a/jobs/b/branches/c/config.xml
+    for b in jobs/a/jobs/b/branches/c/builds/7 jobs/a/builds/1 jobs/d/builds/2; do echo log >"$b/log"; done
+    echo m >plugins/p1/META-INF/MANIFEST.MF
+    head -c 4096 /dev/urandom >plugins/p1.jpi
+    echo key >secrets/master.key
+    echo s >secrets/hudson.util.Secret
+    echo w >jobs/w/config.xml
+    ln -s /etc link
+    chown -R 1001:1001 /data
+    chmod 0640 credentials.xml'
+
+  info "files: backup while a writer saves by temp file and rename"
+  docker run -d --name "${PROJECT}-files-writer" -v "${FILES_DATA}:/data" --entrypoint bash "$FILES_IMAGE" -c '
+    end=$(( $(date +%s) + 20 ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+      t=$(mktemp -p /data/jobs/w atomicXXXX.tmp); echo "$RANDOM" >"$t"; mv "$t" /data/jobs/w/config.xml
+    done' >/dev/null
+  sleep 2
+  out="$(backup_image "$FILES_IMAGE" backup "$prefix" "${select[@]}" "${backup_env[@]}" 2>&1)" || {
+    printf '%s\n' "$out" >&2
+    fail "files: backup failed while the application saved files"
+  }
+  [[ "$(files_runs)" -eq 1 ]] || fail "files: no run folder uploaded"
+  pass "files: backup uploaded a run while the application saved by rename"
+  docker wait "${PROJECT}-files-writer" >/dev/null
+  docker rm "${PROJECT}-files-writer" >/dev/null
+
+  info "files: restore into an empty volume"
+  backup_image "$FILES_IMAGE" restore "$prefix" "${select[@]}" -e FILES_RESTORE_TARGET=/target \
+    -v "${FILES_TARGET}:/target" --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+    >/dev/null || fail "files: restore failed"
+  # Runs inside the container: expands there.
+  # shellcheck disable=SC2016
+  files_sh "${FILES_DATA}:/data:ro" "${FILES_TARGET}:/target:ro" -- '
+    set -e
+    # Every selected file with its content hash, owner and mode; links with
+    # their target. jobs/w is skipped: the writer changed it after the backup.
+    tree() {
+      cd "$1" && find . \( -name builds -o -name w -o -name lost+found \) -prune -o \
+        ! -name master.key ! -name p1.jpi ! -type d -print | sort | while read -r f; do
+        if [ -L "$f" ]; then echo "$f -> $(readlink "$f")"
+        else echo "$f $(sha256sum <"$f" | cut -d" " -f1) $(stat -c %u:%a "$f")"; fi
+      done
+    }
+    [ "$(tree /data)" = "$(tree /target)" ]
+    [ -z "$(find /target -name builds -o -name master.key -o -name p1.jpi)" ]
+    [ "$(stat -c %u:%a /target/credentials.xml)" = 1001:640 ]
+    [ "$(readlink /target/link)" = /etc ]' ||
+    fail "files: the restored tree differs from the selection"
+  pass "files: restore recreated the selection byte for byte, owners, modes and the symlink kept"
+
+  info "files: an archive holding a forbidden path is never kept"
+  before="$(files_runs)"
+  if out="$(backup_image "$FILES_IMAGE" backup "$prefix" "${select[@]}" -e FILES_EXCLUDE= "${backup_env[@]}" 2>&1)"; then
+    fail "files: a backup holding secrets/master.key succeeded"
+  fi
+  [[ "$out" == *"secrets/master.key', which matches FILES_FORBID"* ]] ||
+    fail "files: the run failed, but not on FILES_FORBID: ${out##*$'\n'}"
+  after="$(files_runs)"
+  [[ "$before" == "$after" ]] || fail "files: the forbidden run reached the bucket (${before} -> ${after} runs)"
+  pass "files: FILES_FORBID failed the run and nothing was uploaded"
+
+  info "files: a file written in place while it is read fails the run"
+  files_sh "${FILES_DATA}:/data" -- 'head -c 50000000 /dev/urandom >/data/jobs/big.log'
+  docker run -d --name "${PROJECT}-files-writer" -v "${FILES_DATA}:/data" --entrypoint bash "$FILES_IMAGE" -c '
+    end=$(( $(date +%s) + 30 ))
+    while [ "$(date +%s)" -lt "$end" ]; do head -c 65536 /dev/urandom >>/data/jobs/big.log; done' >/dev/null
+  sleep 1
+  before="$(files_runs)"
+  if out="$(backup_image "$FILES_IMAGE" backup "$prefix" "${select[@]}" "${backup_env[@]}" 2>&1)"; then
+    fail "files: a backup succeeded while an included file was being appended to"
+  fi
+  [[ "$out" == *"jobs/big.log: file changed as we read it"* ]] ||
+    fail "files: the run failed, but not on the file being written: ${out##*$'\n'}"
+  [[ "$before" == "$(files_runs)" ]] || fail "files: the torn run reached the bucket"
+  pass "files: a file changing while read failed the run"
+  docker rm -f "${PROJECT}-files-writer" >/dev/null
+}
+
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql postgresql_owner completeness mongodb mongodb_oplog redis vault sqlite schedule notify upload_failure)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql postgresql_owner completeness mongodb mongodb_oplog redis vault sqlite files schedule notify upload_failure)
 
   start_stack "${backends[@]}"
   local b

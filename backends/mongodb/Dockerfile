@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 #
 # MongoDB backup image.
-ARG SUPERCRONIC_VERSION=0.2.34
-ARG DBTOOLS_VERSION=100.14.1
+ARG SUPERCRONIC_VERSION=0.2.51
+ARG DBTOOLS_VERSION=100.19.1
 
-FROM debian:bookworm-slim AS awscli
+FROM debian:trixie-slim AS awscli
 ARG TARGETARCH
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl unzip ca-certificates \
@@ -19,7 +19,7 @@ RUN set -eux; \
   unzip -q /tmp/aws.zip -d /tmp; \
   /tmp/aws/install --install-dir /aws-cli --bin-dir /aws-cli/bin
 
-FROM debian:bookworm-slim AS supercronic
+FROM debian:trixie-slim AS supercronic
 ARG TARGETARCH
 ARG SUPERCRONIC_VERSION
 RUN apt-get update \
@@ -29,7 +29,7 @@ RUN curl -fsSL -o /usr/local/bin/supercronic \
   "https://github.com/aptible/supercronic/releases/download/v${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" \
   && chmod +x /usr/local/bin/supercronic
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 ARG TARGETARCH
 ARG DBTOOLS_VERSION
 # Recorded in every run's _COMPLETE marker, so a backup says what wrote it.
@@ -57,7 +57,7 @@ RUN apt-get update \
   amd64) \
   curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc \
   | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg; \
-  echo "deb [signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/8.0 main" \
+  echo "deb [signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/debian trixie/mongodb-org/8.0 main" \
   > /etc/apt/sources.list.d/mongodb-org-8.0.list; \
   apt-get update; \
   apt-get install -y --no-install-recommends mongodb-database-tools; \

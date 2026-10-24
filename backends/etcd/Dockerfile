@@ -2,10 +2,10 @@
 #
 # etcd backup image. Alpine keeps it small; etcdctl is pinned so it can be
 # matched to the cluster's major/minor version.
-ARG ETCD_VERSION=3.5.16
-ARG SUPERCRONIC_VERSION=0.2.34
+ARG ETCD_VERSION=3.5.35
+ARG SUPERCRONIC_VERSION=0.2.51
 
-FROM alpine:3.20
+FROM alpine:3.24
 ARG TARGETARCH
 ARG ETCD_VERSION
 ARG SUPERCRONIC_VERSION

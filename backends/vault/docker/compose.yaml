@@ -15,13 +15,13 @@
 
 name: platform-backup-vault
 
-x-image: &image ghcr.io/quyendv/platform-backup/vault:0.6.3
+x-image: &image ghcr.io/quyendv/platform-backup/vault:0.7.0
 
 services:
   vault-agent:
     # Any recent agent works against any recent server; matching the server's
     # version is the conservative choice.
-    image: hashicorp/vault:1.18
+    image: hashicorp/vault:2.2
     command: ["agent", "-config=/vault/config/agent.hcl"]
     # VAULT_ADDR (and VAULT_CACERT, if set) straight from .env. Not as
     # ${VAULT_ADDR}: Compose lets the invoking shell's environment win over .env
