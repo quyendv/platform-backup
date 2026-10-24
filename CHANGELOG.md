@@ -9,6 +9,8 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-24
+
 ### Security
 
 - **Every image rebuilt on current versions; no fixable HIGH or CRITICAL CVE

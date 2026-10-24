@@ -12,7 +12,7 @@
 
 name: platform-backup-etcd
 
-x-image: &image ghcr.io/quyendv/platform-backup/etcd:0.6.3
+x-image: &image ghcr.io/quyendv/platform-backup/etcd:0.7.0
 
 services:
   backup:

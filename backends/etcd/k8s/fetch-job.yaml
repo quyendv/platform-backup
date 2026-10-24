@@ -18,7 +18,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: fetch
-          image: ghcr.io/quyendv/platform-backup/etcd:0.6.3
+          image: ghcr.io/quyendv/platform-backup/etcd:0.7.0
           imagePullPolicy: Always
           env:
             - name: MODE

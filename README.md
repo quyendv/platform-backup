@@ -10,13 +10,13 @@ restore its own data.
 
 | Image | Release tags | Moving tags |
 |---|---|---|
-| `ghcr.io/quyendv/platform-backup/postgresql` | `0.6.3-pg14` … `0.6.3-pg17` | `pg14` `pg15` `pg16` `pg17` `latest` (= pg17) |
-| `ghcr.io/quyendv/platform-backup/mongodb` | `0.6.3` | `latest` |
-| `ghcr.io/quyendv/platform-backup/etcd` | `0.6.3` | `latest` |
-| `ghcr.io/quyendv/platform-backup/vault` | `0.6.3` | `latest` |
-| `ghcr.io/quyendv/platform-backup/redis` | `0.6.3-redis7` `0.6.3-redis8` | `redis7` `redis8` `latest` (= redis8) |
-| `ghcr.io/quyendv/platform-backup/sqlite` | `0.6.3` | `latest` |
-| `ghcr.io/quyendv/platform-backup/files` | *(next release)* | `latest` |
+| `ghcr.io/quyendv/platform-backup/postgresql` | `0.7.0-pg14` … `0.7.0-pg17` | `pg14` `pg15` `pg16` `pg17` `latest` (= pg17) |
+| `ghcr.io/quyendv/platform-backup/mongodb` | `0.7.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/etcd` | `0.7.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/vault` | `0.7.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/redis` | `0.7.0-redis7` `0.7.0-redis8` | `redis7` `redis8` `latest` (= redis8) |
+| `ghcr.io/quyendv/platform-backup/sqlite` | `0.7.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/files` | `0.7.0` | `latest` |
 
 Release tags never move. Moving tags are rebuilt on every push to `main` and
 `develop`, so they can carry unreleased changes: pin a release tag for anything
