@@ -1,0 +1,55 @@
+# Jenkins home backup on the Jenkins host. README.md is the procedure.
+#
+#   cp .env.example .env                     # S3 settings, JENKINS_HOME_DIR
+#   docker compose up -d                     # daily at 02:00 UTC
+#   docker compose run --rm backup run       # one backup now
+#   docker compose run --rm restore          # newest run into RESTORE_TARGET_DIR
+#   ./drill.sh --key <master.key> --image jenkins/jenkins:<your version>
+#
+# The home is mounted read-only: a backup never writes to Jenkins.
+
+name: jenkins-backup
+
+x-image: &image ghcr.io/quyendv/platform-backup/files:0.7.0
+
+services:
+  backup:
+    image: *image
+    env_file: .env
+    # Root, as the image runs, able to read every file and nothing more.
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH]
+    volumes:
+      # Persistent, so .last-run.json survives restarts: the HEALTHCHECK and
+      # NOTIFY_ON=change both read it.
+      - backup:/backup
+      - ${JENKINS_HOME_DIR:?set JENKINS_HOME_DIR in .env}:/jenkins-home:ro
+    extra_hosts:
+      # Lets AWS_ENDPOINT_URL_S3=http://host.docker.internal:9000 reach an object
+      # store on this host.
+      - "host.docker.internal:host-gateway"
+    restart: ${RESTART_POLICY:-no}
+
+  # Manual only: the newest run (or RESTORE_TIMESTAMP) into RESTORE_TARGET_DIR,
+  # which must be empty. Never point it at the live JENKINS_HOME_DIR of a
+  # running Jenkins.
+  restore:
+    image: *image
+    profiles: [manual]
+    env_file: .env
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    environment:
+      MODE: restore
+      SCHEDULE: ""
+      BACKUP_DIR: /tmp/backup
+      FILES_RESTORE_TARGET: /target
+      NOTIFY_ON: never
+    volumes:
+      - ${RESTORE_TARGET_DIR:-./restored-home}:/target
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+
+volumes:
+  backup:

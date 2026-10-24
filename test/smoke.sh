@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-[[ ${#BACKENDS[@]} -gt 0 ]] || BACKENDS=(postgresql mongodb etcd vault redis sqlite)
+[[ ${#BACKENDS[@]} -gt 0 ]] || BACKENDS=(postgresql mongodb etcd vault redis sqlite files)
 
 image_for() {
   case "$1" in
@@ -57,6 +57,8 @@ tools_for() {
     redis) printf '%s; redis-cli --version; redis-server --version; redis-check-rdb --version; zstd --version' "$common" ;;
     # VACUUM INTO is what the dump runs; a sqlite3 without it would fail every backup.
     sqlite) printf "%s; sqlite3 --version; sqlite3 :memory: \"VACUUM INTO '/tmp/smoke.db'\"" "$common" ;;
+    # BusyBox tar lacks what the adapter relies on; GNU tar is the point.
+    files) printf '%s; tar --version | grep -q "GNU tar"; zstd --version' "$common" ;;
   esac
 }
 

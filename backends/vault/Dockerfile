@@ -2,8 +2,8 @@
 #
 # Vault backup image, built on the official Vault image so the CLI version
 # tracks the server it talks to.
-ARG VAULT_VERSION=1.18
-ARG SUPERCRONIC_VERSION=0.2.34
+ARG VAULT_VERSION=2.2
+ARG SUPERCRONIC_VERSION=0.2.51
 
 FROM hashicorp/vault:${VAULT_VERSION}
 ARG TARGETARCH

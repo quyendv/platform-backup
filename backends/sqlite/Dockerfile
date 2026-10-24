@@ -5,8 +5,8 @@
 #
 # One image: the SQLite file format is backward compatible, and VACUUM INTO
 # (3.27+) is far older than any supported base.
-ARG ALPINE_VERSION=3.22
-ARG SUPERCRONIC_VERSION=0.2.34
+ARG ALPINE_VERSION=3.24
+ARG SUPERCRONIC_VERSION=0.2.51
 
 FROM alpine:${ALPINE_VERSION}
 ARG TARGETARCH

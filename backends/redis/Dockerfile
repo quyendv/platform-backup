@@ -8,7 +8,7 @@
 # REDIS0015, which redis-server 7.4 refuses to load), and both verification and
 # restore parse the file. Match the tag to the server, or use a newer one.
 ARG REDIS_VERSION=8
-ARG SUPERCRONIC_VERSION=0.2.34
+ARG SUPERCRONIC_VERSION=0.2.51
 
 FROM redis:${REDIS_VERSION}-alpine
 ARG TARGETARCH

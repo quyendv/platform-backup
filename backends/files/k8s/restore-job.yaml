@@ -1,0 +1,66 @@
+# One-shot restore for files. Reuses the CronJob's Secret, so the object store
+# settings and the selection checks cannot drift between backup and restore.
+#
+# STOP THE APPLICATION FIRST. Restore writes files under a running process
+# otherwise, and that cannot be detected. If a controller heals replicas (a
+# GitOps tool with self-heal, an operator), suspend it before scaling down.
+#
+#   kubectl scale deploy/<your-app> --replicas=0 -n <your-namespace>
+#   kubectl apply -f backends/files/k8s/restore-job.yaml
+#   kubectl logs -f job/files-restore -n <your-namespace>
+#   kubectl scale deploy/<your-app> --replicas=1 -n <your-namespace>
+#
+# The target must be empty (a new volume) unless FILES_RESTORE_OVERWRITE is
+# "true"; even then nothing in it is deleted, archived files only replace their
+# namesakes.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: files-restore
+  namespace: <your-namespace>
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      # No affinity to the application: it is stopped, so its volume is free to
+      # attach wherever this pod lands.
+      containers:
+        - name: restore
+          image: ghcr.io/quyendv/platform-backup/files:0.7.0
+          # Root (the image's default), so restored files get their owners and
+          # modes back: the application usually runs under its own uid.
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER]
+          imagePullPolicy: Always
+          env:
+            - name: MODE
+              value: "restore"
+            # Empty selects the newest run; set YYYYMMDD_HHMMSS to pin one.
+            - name: RESTORE_TIMESTAMP
+              value: ""
+            # "true" extracts over a non-empty volume; nothing is deleted.
+            - name: FILES_RESTORE_OVERWRITE
+              value: "false"
+            # A restore is deliberate and watched; notifying about it is noise.
+            - name: NOTIFY_ON
+              value: "never"
+          envFrom:
+            - secretRef:
+                name: files-backup
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: restore
+              mountPath: /restore
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: <your-app-data>
+        - name: restore
+          emptyDir: {}
