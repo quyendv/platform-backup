@@ -10,7 +10,7 @@
 
 name: jenkins-backup
 
-x-image: &image ghcr.io/quyendv/platform-backup/files:0.7.0
+x-image: &image ghcr.io/quyendv/platform-backup/files:0.8.0
 
 services:
   backup:

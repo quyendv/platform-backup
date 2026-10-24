@@ -25,14 +25,14 @@ target "_common" {
 # version. `latest` follows the newest supported release.
 target "postgresql" {
   name       = "postgresql-pg${pg}"
-  matrix     = { pg = ["14", "15", "16", "17"] }
+  matrix     = { pg = ["15", "16", "17", "18"] }
   inherits   = ["_common"]
   dockerfile = "backends/postgresql/Dockerfile"
   args       = { PG_VERSION = pg }
   tags = concat(
     ["${REGISTRY}/postgresql:pg${pg}"],
     TAG == "dev" ? [] : ["${REGISTRY}/postgresql:${TAG}-pg${pg}"],
-    pg == "17" ? ["${REGISTRY}/postgresql:latest"] : [],
+    pg == "18" ? ["${REGISTRY}/postgresql:latest"] : [],
   )
 }
 

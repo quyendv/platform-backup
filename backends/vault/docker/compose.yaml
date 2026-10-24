@@ -15,7 +15,7 @@
 
 name: platform-backup-vault
 
-x-image: &image ghcr.io/quyendv/platform-backup/vault:0.7.0
+x-image: &image ghcr.io/quyendv/platform-backup/vault:0.8.0
 
 services:
   vault-agent:

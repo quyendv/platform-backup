@@ -2,10 +2,11 @@
 # End-to-end: seed a real target, back it up to a real MinIO, destroy the data,
 # restore it, and assert the data came back.
 #
-# Usage: test/integration/run.sh [backend ...]   (default: postgresql mongodb redis vault sqlite files schedule notify upload_failure)
+# Usage: test/integration/run.sh [backend ...]   (default: every test_* below)
 #
-# etcd is not covered here: it needs a real etcd with TLS on the host network,
-# and its restore runs outside the container by design. See backends/etcd/README.md.
+# etcd's restore runs on the member host, not in the image, so its test plays
+# that part: it restores the fetched snapshot with the image's etcdutl and
+# starts a server on the result.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,6 +29,9 @@ cleanup() {
   docker volume rm -f "${PROJECT}_sqlite_data" "${PROJECT}_sqlite_fetch" >/dev/null 2>&1 || true
   docker rm -f "${PROJECT}-files-writer" >/dev/null 2>&1 || true
   docker volume rm -f "${PROJECT}_files_data" "${PROJECT}_files_target" >/dev/null 2>&1 || true
+  docker rm -f "${PROJECT}-etcd" >/dev/null 2>&1 || true
+  docker volume rm -f "${PROJECT}_etcd_restore" >/dev/null 2>&1 || true
+  [[ -z "${ETCD_CERTS:-}" ]] || rm -rf "$ETCD_CERTS"
 }
 trap cleanup EXIT
 
@@ -62,6 +66,7 @@ services_for() {
     mongodb) printf 'mongo' ;;
     mongodb_oplog) printf 'mongors' ;;
     postgresql_owner | completeness) printf 'postgres' ;;
+    postgresql_versions) printf 'postgres15 postgres18' ;;
     redis) printf 'redis' ;;
     vault) printf 'vault' ;;
   esac
@@ -90,7 +95,13 @@ start_stack() {
 }
 
 psql_target() {
-  "${COMPOSE[@]}" exec -T -e PGPASSWORD=secret postgres \
+  psql_on postgres "$@"
+}
+
+psql_on() {
+  local service="$1"
+  shift
+  "${COMPOSE[@]}" exec -T -e PGPASSWORD=secret "$service" \
     psql -U postgres -d appdb -tAq -v ON_ERROR_STOP=1 "$@"
 }
 
@@ -160,6 +171,40 @@ test_postgresql() {
     fail "postgresql: backup with read-back failed: ${out}"
   [[ "$out" == *"Read back postgresql-"* ]] || fail "postgresql: read-back did not read the artifact"
   pass "postgresql: read-back streamed the objects back and matched"
+}
+
+# Each end of the supported range, each with its own tag. The tag has to match
+# the server for restore too, not only for dump: pg_restore 17 and later always
+# sends SET transaction_timeout, which a 15 or 16 server rejects.
+test_postgresql_versions() {
+  local service image out rows
+  for service in postgres15 postgres18; do
+    image="ghcr.io/quyendv/platform-backup/postgresql:pg${service#postgres}"
+    local prefix="it/postgresql-${service}"
+    local env=(-e POSTGRES_HOST="$service" -e POSTGRES_PORT=5432
+      -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=appdb)
+
+    info "postgresql: ${image##*:} image against ${service}"
+    psql_on "$service" -c "CREATE ROLE reader NOLOGIN; CREATE TABLE widgets (id int primary key, name text);"
+    psql_on "$service" -c "INSERT INTO widgets VALUES (1,'alpha'),(2,'beta'); GRANT SELECT ON widgets TO reader;"
+    backup_image "$image" backup "$prefix" "${env[@]}" >/dev/null ||
+      fail "postgresql: the ${image##*:} image could not back up ${service}"
+
+    psql_on "$service" -c "DROP TABLE widgets; DROP ROLE reader;"
+    out="$(backup_image "$image" restore "$prefix" "${env[@]}" -e RESTORE_GLOBALS=true 2>&1)" ||
+      fail "postgresql: restoring into ${service} failed: $(grep -iE 'error' <<<"$out" | head -n5)"
+    # psql applies the globals without ON_ERROR_STOP, so a statement the
+    # server rejects only shows up as an ERROR line. The connecting role's own
+    # lines are skipped on purpose; anything else is a regression.
+    if grep -v 'already exists' <<<"$out" | grep -q 'ERROR:'; then
+      fail "postgresql: restoring into ${service} reported errors: $(grep 'ERROR:' <<<"$out" | head -n3)"
+    fi
+    rows="$(psql_on "$service" -c "SELECT count(*) FROM widgets;")"
+    [[ "$rows" == "2" ]] || fail "postgresql: expected 2 rows in ${service}, got '${rows}'"
+    rows="$(psql_on "$service" -c "SELECT has_table_privilege('reader', 'widgets', 'SELECT');")"
+    [[ "$rows" == "t" ]] || fail "postgresql: the role or its grant did not come back in ${service}"
+    pass "postgresql: ${image##*:} round-trips a ${service#postgres} server, globals included"
+  done
 }
 
 # Most deployments back up as the application's owner, not a superuser, and
@@ -837,9 +882,90 @@ test_files() {
   docker rm -f "${PROJECT}-files-writer" >/dev/null
 }
 
+ETCD_IMAGE=ghcr.io/quyendv/platform-backup/etcd:latest
+
+# A throwaway CA, one certificate for both ends: every real etcd requires TLS
+# with client certificates, and that is the path the image has to take.
+etcd_certs() {
+  local dir="$1"
+  openssl req -x509 -newkey rsa:2048 -nodes -keyout "$dir/ca.key" -out "$dir/ca.crt" \
+    -days 1 -subj /CN=it-ca 2>/dev/null
+  openssl req -newkey rsa:2048 -nodes -keyout "$dir/etcd.key" -out "$dir/etcd.csr" \
+    -subj /CN=etcd 2>/dev/null
+  printf 'subjectAltName=DNS:etcd,DNS:localhost\nextendedKeyUsage=serverAuth,clientAuth\n' >"$dir/ext"
+  openssl x509 -req -in "$dir/etcd.csr" -CA "$dir/ca.crt" -CAkey "$dir/ca.key" -CAcreateserial \
+    -out "$dir/etcd.crt" -days 1 -extfile "$dir/ext" 2>/dev/null
+  # The etcd 3.6+ images run as a non-root user.
+  chmod 755 "$dir"
+  chmod 644 "$dir"/*
+}
+
+etcd_tls() {
+  printf '%s\n' --cacert /certs/ca.crt --cert /certs/etcd.crt --key /certs/etcd.key
+}
+
+# etcdctl takes the snapshot over the client API and etcdutl verifies and
+# restores the file; one image has to do both for every 3.x line in use.
+test_etcd() {
+  local v prefix out tls=()
+  mapfile -t tls < <(etcd_tls)
+  ETCD_CERTS="$(mktemp -d)"
+  etcd_certs "$ETCD_CERTS"
+  local env=(-v "${ETCD_CERTS}:/certs:ro" -e ETCD_MODE=explicit
+    -e ETCDCTL_ENDPOINTS=https://etcd:2379 -e ETCDCTL_CACERT=/certs/ca.crt
+    -e ETCDCTL_CERT=/certs/etcd.crt -e ETCDCTL_KEY=/certs/etcd.key)
+
+  for v in v3.5.35 v3.6.16 v3.7.3; do
+    prefix="it/etcd-${v}"
+    info "etcd: server ${v}"
+    docker run -d --name "${PROJECT}-etcd" --network "$NETWORK" --network-alias etcd \
+      -v "${ETCD_CERTS}:/certs:ro" "quay.io/coreos/etcd:${v}" etcd --name it --data-dir /tmp/it \
+      --listen-client-urls https://0.0.0.0:2379 --advertise-client-urls https://etcd:2379 \
+      --cert-file /certs/etcd.crt --key-file /certs/etcd.key \
+      --trusted-ca-file /certs/ca.crt --client-cert-auth >/dev/null
+    local i
+    for i in $(seq 30); do
+      docker exec "${PROJECT}-etcd" etcdctl --endpoints https://localhost:2379 "${tls[@]}" \
+        put /probe "written-on-${v}" >/dev/null 2>&1 && break
+      [[ "$i" -lt 30 ]] || fail "etcd: ${v} never accepted a write"
+      sleep 1
+    done
+
+    out="$(backup_image "$ETCD_IMAGE" backup "$prefix" "${env[@]}" 2>&1)" ||
+      fail "etcd: backup against ${v} failed: ${out##*$'\n'}"
+    s3_ls --recursive "s3://${BUCKET}/${prefix}/" | grep -q '_COMPLETE' ||
+      fail "etcd: the run against ${v} has no _COMPLETE marker"
+    docker rm -f "${PROJECT}-etcd" >/dev/null
+
+    # The host's part: fetch, restore a data directory, start a member on it.
+    docker volume rm -f "${PROJECT}_etcd_restore" >/dev/null
+    backup_image "$ETCD_IMAGE" fetch "$prefix" -v "${PROJECT}_etcd_restore:/restore" >/dev/null ||
+      fail "etcd: fetching the ${v} snapshot failed"
+    docker run --rm -v "${PROJECT}_etcd_restore:/restore" --entrypoint bash "$ETCD_IMAGE" -c '
+      set -euo pipefail
+      etcdutl snapshot restore /restore/*/etcd-*.db --name it --data-dir /restore/data         --initial-cluster it=http://localhost:2380 --initial-advertise-peer-urls http://localhost:2380
+      chmod -R a+rwX /restore/data' >/dev/null 2>&1 ||
+      fail "etcd: etcdutl could not restore the ${v} snapshot"
+    docker run -d --name "${PROJECT}-etcd" -v "${PROJECT}_etcd_restore:/restore" "quay.io/coreos/etcd:${v}" \
+      etcd --name it --data-dir /restore/data \
+      --listen-client-urls http://localhost:2379 --advertise-client-urls http://localhost:2379 \
+      --listen-peer-urls http://localhost:2380 --initial-advertise-peer-urls http://localhost:2380 \
+      --initial-cluster it=http://localhost:2380 >/dev/null
+    for i in $(seq 30); do
+      out="$(docker exec "${PROJECT}-etcd" etcdctl --endpoints http://localhost:2379 \
+        get /probe --print-value-only 2>/dev/null)" && [[ -n "$out" ]] && break
+      [[ "$i" -lt 30 ]] || fail "etcd: a ${v} member never started on the restored data"
+      sleep 1
+    done
+    [[ "$out" == "written-on-${v}" ]] || fail "etcd: expected 'written-on-${v}' after restore, got '${out}'"
+    docker rm -f "${PROJECT}-etcd" >/dev/null
+    pass "etcd: ${v} snapshot saved, verified, restored and read back"
+  done
+}
+
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql postgresql_owner completeness mongodb mongodb_oplog redis vault sqlite files schedule notify upload_failure)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql postgresql_owner postgresql_versions completeness mongodb mongodb_oplog redis vault sqlite files etcd schedule notify upload_failure)
 
   start_stack "${backends[@]}"
   local b

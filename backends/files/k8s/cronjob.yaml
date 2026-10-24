@@ -85,7 +85,7 @@ spec:
                   topologyKey: kubernetes.io/hostname
           containers:
             - name: backup
-              image: ghcr.io/quyendv/platform-backup/files:0.7.0
+              image: ghcr.io/quyendv/platform-backup/files:0.8.0
               imagePullPolicy: Always
               envFrom:
                 - secretRef:

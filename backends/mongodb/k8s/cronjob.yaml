@@ -78,7 +78,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: backup
-              image: ghcr.io/quyendv/platform-backup/mongodb:0.7.0
+              image: ghcr.io/quyendv/platform-backup/mongodb:0.8.0
               imagePullPolicy: Always
               envFrom:
                 - secretRef:

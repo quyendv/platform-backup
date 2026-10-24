@@ -2,8 +2,10 @@
 
 `ghcr.io/quyendv/platform-backup/etcd`
 
-`etcdctl snapshot save`, with the snapshot verified by `etcdctl snapshot status`
-before it is uploaded.
+`etcdctl snapshot save`, with the snapshot verified by `etcdutl snapshot status`
+before it is uploaded. The image carries etcdctl and etcdutl 3.7; both are
+tested against etcd 3.5, 3.6 and 3.7 servers, from snapshot to a member started
+on the restored data.
 
 **This image backs up and fetches. It does not restore.** See below.
 
@@ -49,7 +51,7 @@ Host networking, because etcd listens on the host. Root, because
 
 ## Restore
 
-Restoring etcd is not a client operation. `etcdctl snapshot restore` writes a
+Restoring etcd is not a client operation. `etcdutl snapshot restore` writes a
 new data directory for a **stopped** member, and every member of the cluster
 has to be rebuilt from the same snapshot with its own name and peer URL. A
 container talking to a running cluster cannot do that, so `MODE=restore` exits
@@ -68,12 +70,17 @@ docker run --rm \
   ghcr.io/quyendv/platform-backup/etcd:latest
 
 # 2. On EACH control-plane node, with etcd stopped
-etcdctl snapshot restore /var/tmp/etcd-restore/<run>/etcd-<run>.db \
+etcdutl snapshot restore /var/tmp/etcd-restore/<run>/etcd-<run>.db \
   --name <this-member-name> \
   --initial-cluster <m1=https://ip1:2380,m2=https://ip2:2380,...> \
   --initial-advertise-peer-urls https://<this-ip>:2380 \
   --data-dir /var/lib/etcd
 ```
+
+`etcdctl snapshot restore` was removed in etcd 3.6; use `etcdutl`. If the host
+has none, the image's own works on a 3.5 cluster too: run it with
+`--entrypoint etcdutl`, `/var/tmp/etcd-restore` and `/var/lib` mounted, and the
+same arguments.
 
 On kubeadm, stop etcd by moving `/etc/kubernetes/manifests/etcd.yaml` aside;
 put it back once every member's data directory has been rebuilt. Set

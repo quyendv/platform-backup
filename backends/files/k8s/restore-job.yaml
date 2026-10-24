@@ -28,7 +28,7 @@ spec:
       # attach wherever this pod lands.
       containers:
         - name: restore
-          image: ghcr.io/quyendv/platform-backup/files:0.7.0
+          image: ghcr.io/quyendv/platform-backup/files:0.8.0
           # Root (the image's default), so restored files get their owners and
           # modes back: the application usually runs under its own uid.
           securityContext:

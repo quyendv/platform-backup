@@ -8,11 +8,12 @@
 #   docker compose run --rm restore          # fetch + verify the newest run
 #
 # The tag must match the server's major version: pg_dump refuses to dump a
-# newer server. 0.7.0-pg14 … 0.7.0-pg17 exist.
+# newer server, and a newer pg_restore can fail on an older one.
+# 0.8.0-pg15 … 0.8.0-pg18 exist.
 
 name: platform-backup-postgresql
 
-x-image: &image ghcr.io/quyendv/platform-backup/postgresql:0.7.0-pg17
+x-image: &image ghcr.io/quyendv/platform-backup/postgresql:0.8.0-pg17
 
 services:
   backup:

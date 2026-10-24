@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main, develop]
+    branches: [main]
   # Re-run against the current HEAD without an empty commit.
   workflow_dispatch:
 

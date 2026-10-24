@@ -29,6 +29,30 @@ services:
       timeout: 3s
       retries: 30
 
+  # The oldest and newest majors the images support, for the cross-version test:
+  # the pg18 image must dump both and restore into both.
+  postgres15:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: appdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  postgres18:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: appdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   # Pinned, not `mongo:8`: a later 8.x refuses to start on Linux kernels 6.19
   # and newer (SERVER-121912), and a moving tag broke this suite overnight.
   mongo:

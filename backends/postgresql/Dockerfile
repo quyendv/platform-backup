@@ -2,7 +2,7 @@
 #
 # PostgreSQL backup image. Built once per server major version: pg_dump refuses
 # to dump a server newer than itself, so the tag must match the target.
-ARG PG_VERSION=17
+ARG PG_VERSION=18
 ARG SUPERCRONIC_VERSION=0.2.51
 
 FROM debian:trixie-slim AS awscli

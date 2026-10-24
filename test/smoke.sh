@@ -38,7 +38,7 @@ done
 
 image_for() {
   case "$1" in
-    postgresql) printf '%s/postgresql:pg17' "$REGISTRY" ;;
+    postgresql) printf '%s/postgresql:pg18' "$REGISTRY" ;;
     redis) printf '%s/redis:redis8' "$REGISTRY" ;;
     *) printf '%s/%s:latest' "$REGISTRY" "$1" ;;
   esac
@@ -50,7 +50,7 @@ tools_for() {
   case "$1" in
     postgresql) printf '%s; pg_dump --version; pg_restore --version; psql --version; pg_isready --version' "$common" ;;
     mongodb) printf '%s; mongodump --version; mongorestore --version' "$common" ;;
-    etcd) printf '%s; etcdctl version' "$common" ;;
+    etcd) printf '%s; etcdctl version; etcdutl version' "$common" ;;
     vault) printf '%s; vault version' "$common" ;;
     # redis-server matters as much as redis-cli here: restore stages the RDB on
     # it. redis-check-rdb and zstd are what every backup verifies and compresses with.

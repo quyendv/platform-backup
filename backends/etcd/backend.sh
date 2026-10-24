@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# etcd adapter: etcdctl snapshot save.
+# etcd adapter: etcdctl snapshot save, verified offline by etcdutl.
 #
 # Fetch only. A real etcd restore rewrites the data directory of a stopped
 # member, which cannot be done from inside this container against a running
@@ -70,10 +70,12 @@ backend_dump() {
   printf '%s' "$name"
 }
 
-# A snapshot etcdctl cannot read back is not a backup. This runs as the
+# A snapshot etcdutl cannot read back is not a backup. This runs as the
 # driver's verification step so every backend reports integrity the same way.
+# etcdutl, not etcdctl: etcdctl 3.6 dropped `snapshot status`, and reading the
+# file needs no connection to the cluster.
 backend_verify() {
-  _etcdctl snapshot status "$1" -w table >&2
+  etcdutl snapshot status "$1" -w table >&2
 }
 
 backend_restore_hint() {
@@ -82,7 +84,7 @@ etcd is restored on the member host, not from this container. On each control
 plane node, with etcd stopped:
 
   MODE=fetch ...                       # download the snapshot with this image
-  etcdctl snapshot restore <snapshot.db> \
+  etcdutl snapshot restore <snapshot.db> \
     --name <member-name> \
     --initial-cluster <name1=peer1,...> \
     --initial-advertise-peer-urls <peer-url> \
