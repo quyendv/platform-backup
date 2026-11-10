@@ -106,32 +106,83 @@ STUB
   stub_redis_cli 0 'cluster_enabled:1'
   export REDIS_URL=redis://cache:6379
 
-  run backend_validate
+  run backend_dump "$WORK"
 
   [ "$status" -ne 0 ]
-  [[ "$output" == *"cluster"* ]]
+  [[ "$output" == *"Redis Cluster"* ]]
+  [ ! -e "$WORK/dump.rdb" ]
 }
 
-@test "a standalone server passes validation" {
-  stub_redis_cli 0 'cluster_enabled:0'
+stub_unreachable() {
+  cat >"$STUB_BIN/redis-cli" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$STUB_BIN/redis-cli"
+}
+
+@test "an unreachable server fails the dump" {
+  stub_unreachable
   export REDIS_URL=redis://cache:6379
+
+  run backend_dump "$WORK"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Cannot reach Redis at cache:6379"* ]]
+}
+
+# The driver validates before it starts recording, so a server check there
+# leaves a failing schedule with no state file and no notification.
+@test "backup validation leaves the server check to the reported run" {
+  stub_unreachable
+  export REDIS_URL=redis://cache:6379 MODE=backup
 
   run backend_validate
 
   [ "$status" -eq 0 ]
 }
 
-@test "an unreachable server is refused" {
-  cat >"$STUB_BIN/redis-cli" <<'STUB'
-#!/usr/bin/env bash
-exit 1
-STUB
-  chmod +x "$STUB_BIN/redis-cli"
-  export REDIS_URL=redis://cache:6379
+@test "an unreachable server is recorded as a failed run" {
+  stub_unreachable
+  export REDIS_URL=redis://cache:6379 MODE=backup BACKUP_DIR="$WORK/backup" S3_BUCKET=""
+
+  run bash -c 'set -euo pipefail; source "$1/lib/main.sh"; source "$1/backends/redis/backend.sh"; main' _ "$REPO_ROOT"
+
+  [ "$status" -eq 1 ]
+  [ "$(jq -r .outcome "$BACKUP_DIR/.last-run.json")" = failure ]
+  [[ "$(jq -r .error "$BACKUP_DIR/.last-run.json")" == "Cannot reach Redis at cache:6379" ]]
+  run find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "restore still checks the server before downloading anything" {
+  stub_unreachable
+  export REDIS_URL=redis://cache:6379 MODE=restore
 
   run backend_validate
 
   [ "$status" -ne 0 ]
+  [[ "$output" == *"Cannot reach Redis at cache:6379"* ]]
+}
+
+@test "restore refuses a cluster before downloading anything" {
+  stub_redis_cli 0 'cluster_enabled:1'
+  export REDIS_URL=redis://cache:6379 MODE=restore
+
+  run backend_validate
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Redis Cluster"* ]]
+}
+
+@test "restore validation passes against a standalone server" {
+  stub_redis_cli 0 'cluster_enabled:0'
+  export REDIS_URL=redis://cache:6379 MODE=restore
+
+  run backend_validate
+
+  [ "$status" -eq 0 ]
 }
 
 @test "REDIS_URL is required" {
@@ -521,16 +572,4 @@ STUB
   chmod +x "$STUB_BIN/redis-cli"
   REDIS_STAGE_TIMEOUT=60 MODE=fetch REDIS_URL=redis://nowhere:6379 run backend_validate
   [ "$status" -eq 0 ]
-}
-
-@test "a backup still refuses a server it cannot reach" {
-  cat >"$STUB_BIN/redis-cli" <<'STUB'
-#!/usr/bin/env bash
-echo "Could not connect to Redis" >&2
-exit 1
-STUB
-  chmod +x "$STUB_BIN/redis-cli"
-  REDIS_STAGE_TIMEOUT=60 MODE=backup REDIS_URL=redis://nowhere:6379 run backend_validate
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"Cannot reach Redis"* ]]
 }
