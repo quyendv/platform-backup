@@ -76,7 +76,8 @@ it builds the images from this checkout.
 
 ## Modes
 
-`MODE` has exactly one meaning per value.
+`MODE` has exactly one meaning per value. Each database backend's README has a table
+of restore scenarios.
 
 | Mode | What it does | postgresql | mongodb | redis | vault | etcd | sqlite | files |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|

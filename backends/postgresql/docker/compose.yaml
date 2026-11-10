@@ -39,6 +39,8 @@ services:
   # writes the scheduled job's state file.
   #   docker compose run --rm restore                                   # fetch
   #   docker compose run --rm -e MODE=restore -e RESTORE_DROP=true restore
+  # Add -e RESTORE_CREATE=true to restore database properties under the same name.
+  # Add -e RESTORE_NO_OWNER=true to skip archived owners and grants.
   restore:
     profiles: [manual]
     image: *image

@@ -85,5 +85,15 @@ backend_restore() {
   fi
 
   log_info "mongorestore: $(mongorestore --version | head -n1)"
-  mongorestore "${args[@]}"
+  local output rc=0 matched=false
+  output="$(mktemp)"
+  mongorestore "${args[@]}" 2>&1 | tee "$output" >&2 || rc=$?
+  if grep -q "restoring \`[^\`]*\` from" "$output"; then matched=true; fi
+  rm -f -- "$output"
+  ((rc == 0)) || die "mongorestore failed (exit ${rc})"
+
+  # It exits 0 having matched nothing when the URI names a database the archive does not hold.
+  if [[ "$matched" == false ]] && _uri_names_database "$MONGODB_URI"; then
+    die "mongorestore restored nothing: the archive has no data for the database named in MONGODB_URI. It must match the backed-up database; see the README to restore under another name"
+  fi
 }

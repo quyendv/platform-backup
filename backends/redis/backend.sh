@@ -255,6 +255,12 @@ HINT
   dir="${BACKUP_DIR:-/tmp}/.restore-$$"
   _redis_stage "$archive" "$dir"
 
+  # Before the flush: a wrong database number must not empty the target.
+  keys="$(_stage_cli -n "$db" dbsize)" ||
+    _redis_stage_fail "Could not count the keys of database ${db} in the backup"
+  [[ "$keys" =~ ^[1-9][0-9]*$ ]] ||
+    _redis_stage_fail "The backup has no keys in database ${db}; nothing was changed. Check the database number in REDIS_URL"
+
   if bool_is_true RESTORE_FLUSH; then
     log_warn "RESTORE_FLUSH is set — emptying database ${db} on ${host}:${port}"
     _redis -n "$db" flushdb >&2 ||

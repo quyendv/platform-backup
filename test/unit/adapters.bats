@@ -254,6 +254,65 @@ STUB
   [[ "$output" != *"--oplogReplay"* ]]
 }
 
+# $1 = exit status, stdin = what the stub writes to stderr, as mongorestore does.
+stub_mongorestore_log() {
+  local log="$BATS_TEST_TMPDIR/mongorestore.log"
+  cat >"$log"
+  cat >"$STUB_BIN/mongorestore" <<STUB
+#!/usr/bin/env bash
+[[ "\$1" == "--version" ]] && exit 0
+cat "$log" >&2
+exit $1
+STUB
+  chmod +x "$STUB_BIN/mongorestore"
+}
+
+@test "mongodb restore fails when the URI's database matches nothing in the archive" {
+  source "$REPO_ROOT/backends/mongodb/backend.sh"
+  export MONGODB_URI='mongodb://db-0/newname?authSource=admin'
+  stub_mongorestore_log 0 <<<'0 document(s) restored successfully. 0 document(s) failed to restore.'
+
+  run backend_restore "$WORK/mongodb-20260101_000000.archive.gz"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"restored nothing"* ]]
+  [[ "$output" != *"authSource"* ]]
+}
+
+@test "mongodb restore accepts a matching database that holds only empty collections" {
+  source "$REPO_ROOT/backends/mongodb/backend.sh"
+  export MONGODB_URI='mongodb://db-0/appdb'
+  stub_mongorestore_log 0 <<'LOG'
+restoring `appdb.empty` from "archive `/d/a.gz`"
+0 document(s) restored successfully. 0 document(s) failed to restore.
+LOG
+
+  run backend_restore "$WORK/mongodb-20260101_000000.archive.gz"
+
+  [ "$status" -eq 0 ]
+}
+
+@test "mongodb restore without a database in the URI is not second-guessed" {
+  source "$REPO_ROOT/backends/mongodb/backend.sh"
+  export MONGODB_URI='mongodb://db-0/?authSource=admin'
+  stub_mongorestore_log 0 <<<'0 document(s) restored successfully. 0 document(s) failed to restore.'
+
+  run backend_restore "$WORK/mongodb-20260101_000000.archive.gz"
+
+  [ "$status" -eq 0 ]
+}
+
+@test "mongodb restore fails when mongorestore fails" {
+  source "$REPO_ROOT/backends/mongodb/backend.sh"
+  export MONGODB_URI='mongodb://db-0/appdb'
+  stub_mongorestore_log 1 <<<'error connecting'
+
+  run backend_restore "$WORK/mongodb-20260101_000000.archive.gz"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"mongorestore failed"* ]]
+}
+
 # --- postgresql: globals -------------------------------------------------------
 
 # A stub that reads its stdin to the end, as the real tool does. One that exits
@@ -474,4 +533,165 @@ STUB
   stub tar 2
   run backend_dump "$BATS_TEST_TMPDIR"
   [ "$status" -ne 0 ]
+}
+
+# Restore stubs record arguments, SQL and call order while draining archive input.
+setup_pg_restore() {
+  source "$REPO_ROOT/backends/postgresql/backend.sh"
+  export POSTGRES_HOST=db.example.com POSTGRES_PORT=5432 POSTGRES_USER=postgres
+  export POSTGRES_PASSWORD=example POSTGRES_DB=appdb MODE=restore
+  export PG_TEST_WORK="$WORK" PG_TEST_DB=appdb PG_TEST_EXISTS=f PG_TEST_LIST_RC=0 PG_TEST_PSQL_RC=0
+  backend_validate
+  printf 'archive' | gzip >"$WORK/postgresql-${RUN_ID}.dump.gz"
+  cat >"$STUB_BIN/pg_restore" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$PG_TEST_WORK/pg_restore.args"
+case "$*" in
+  *--version*) printf 'pg_restore example\n' ;;
+  *--list*)
+    printf ';     dbname: %s\n' "$PG_TEST_DB"
+    exit "$PG_TEST_LIST_RC"
+    ;;
+  *)
+    printf 'restore\n' >>"$PG_TEST_WORK/order"
+    cat >/dev/null
+    ;;
+esac
+STUB
+  cat >"$STUB_BIN/psql" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$PG_TEST_WORK/psql.args"
+sql="$(cat)"
+printf '%s\n' "$sql" >>"$PG_TEST_WORK/psql.sql"
+if [[ "$sql" == *'SELECT EXISTS'* ]]; then
+  printf 'guard\n' >>"$PG_TEST_WORK/order"
+  printf '%s\n' "$PG_TEST_EXISTS"
+  exit "$PG_TEST_PSQL_RC"
+elif [[ "$sql" == *'DROP DATABASE'* ]]; then
+  printf 'drop\n' >>"$PG_TEST_WORK/order"
+else
+  printf 'globals\n' >>"$PG_TEST_WORK/order"
+fi
+STUB
+  chmod +x "$STUB_BIN/pg_restore" "$STUB_BIN/psql"
+}
+
+@test "postgresql restore scenarios: create connects to the maintenance database" {
+  setup_pg_restore
+  RESTORE_CREATE=true POSTGRES_MAINTENANCE_DB=maintenance run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$WORK/pg_restore.args")" == *'-d maintenance --create'* ]]
+  [[ "$(cat "$WORK/psql.args")" == *'-d maintenance'* ]]
+  [[ "$(cat "$WORK/psql.args")" == *'--no-password'* ]]
+  [[ "$(cat "$WORK/psql.args")" == *'-tA'* ]]
+  [[ "$(cat "$WORK/psql.args")" == *'-v name=appdb'* ]]
+  [[ "$(cat "$WORK/psql.sql")" == *"datname = :'name'"* ]]
+}
+
+@test "postgresql restore scenarios: defaults omit create and owner flags" {
+  setup_pg_restore
+  run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$WORK/pg_restore.args")" == *'-d appdb'* ]]
+  [[ "$(cat "$WORK/pg_restore.args")" != *'--create'* ]]
+  [[ "$(cat "$WORK/pg_restore.args")" != *'--no-owner'* ]]
+  [[ "$(cat "$WORK/pg_restore.args")" != *'--no-acl'* ]]
+  [ ! -e "$WORK/psql.args" ]
+}
+
+@test "postgresql restore scenarios: no owner adds both flags with or without create" {
+  setup_pg_restore
+  RESTORE_NO_OWNER=true run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$WORK/pg_restore.args")" == *'--no-owner --no-acl'* ]]
+  rm "$WORK/pg_restore.args"
+  RESTORE_CREATE=true RESTORE_NO_OWNER=true run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$WORK/pg_restore.args")" == *'-d postgres --create --no-owner --no-acl'* ]]
+}
+
+@test "postgresql restore scenarios: mismatched archive name stops before drop or restore" {
+  setup_pg_restore
+  PG_TEST_DB=original RESTORE_CREATE=true RESTORE_DROP=true run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'original'*'appdb'* ]]
+  [[ "$output" == *'unset RESTORE_CREATE'* ]]
+  [ ! -e "$WORK/psql.args" ]
+  [ ! -e "$WORK/order" ]
+}
+
+@test "postgresql restore scenarios: existing database requires drop" {
+  setup_pg_restore
+  PG_TEST_EXISTS=t RESTORE_CREATE=true run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'appdb'*'RESTORE_DROP=false'* ]]
+  [[ "$output" == *'RESTORE_DROP=true'* ]]
+  [ "$(cat "$WORK/order")" = guard ]
+}
+
+@test "postgresql restore scenarios: create drops before globals and skips bare create" {
+  setup_pg_restore
+  printf 'CREATE ROLE reader;\n' | gzip >"$WORK/globals-${RUN_ID}.sql.gz"
+  RESTORE_CREATE=true RESTORE_DROP=true RESTORE_GLOBALS=true run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$WORK/psql.sql")" == *'pg_terminate_backend'* ]]
+  [[ "$(cat "$WORK/psql.sql")" == *'DROP DATABASE IF EXISTS "appdb";'* ]]
+  [[ "$(cat "$WORK/psql.sql")" != *'CREATE DATABASE'* ]]
+  [ "$(cat "$WORK/order")" = $'drop\nglobals\nrestore' ]
+  [[ "$(cat "$WORK/pg_restore.args")" == *'-d postgres --create'* ]]
+}
+
+@test "postgresql restore scenarios: create and clean are refused only in restore mode" {
+  setup_pg_restore
+  RESTORE_CREATE=true RESTORE_CLEAN=true run backend_validate
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'RESTORE_CREATE'*'RESTORE_CLEAN'* ]]
+  MODE=backup RESTORE_CREATE=true RESTORE_CLEAN=true run backend_validate
+  [ "$status" -eq 0 ]
+}
+
+@test "postgresql restore scenarios: plain drop still creates an empty database" {
+  setup_pg_restore
+  RESTORE_DROP=true run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$WORK/psql.sql")" == *'DROP DATABASE IF EXISTS "appdb";'* ]]
+  [[ "$(cat "$WORK/psql.sql")" == *'CREATE DATABASE "appdb";'* ]]
+  [[ "$(cat "$WORK/pg_restore.args")" != *'--create'* ]]
+  [[ "$output" == *'owner, encoding, grants and database-level settings'*'RESTORE_CREATE'* ]]
+}
+
+@test "postgresql restore scenarios: invalid opt-in booleans fail validation" {
+  setup_pg_restore
+  RESTORE_CREATE=maybe run backend_validate
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'RESTORE_CREATE must be a boolean'* ]]
+  RESTORE_NO_OWNER=maybe run backend_validate
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'RESTORE_NO_OWNER must be a boolean'* ]]
+}
+
+@test "postgresql restore scenarios: failed existence query names psql" {
+  setup_pg_restore
+  PG_TEST_PSQL_RC=1 RESTORE_CREATE=true run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'psql'*'appdb'* ]]
+  [ "$(cat "$WORK/order")" = guard ]
+}
+
+@test "postgresql restore scenarios: rejected archive stops before drop" {
+  setup_pg_restore
+  PG_TEST_LIST_RC=1 RESTORE_CREATE=true RESTORE_DROP=true run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'pg_restore --list'* ]]
+  [ ! -e "$WORK/psql.args" ]
+  [ ! -e "$WORK/order" ]
+}
+
+@test "postgresql restore scenarios: archive name reader drains the stream" {
+  setup_pg_restore
+  head -c 8000000 /dev/urandom | gzip -1 >"$WORK/postgresql-${RUN_ID}.dump.gz"
+  RESTORE_CREATE=true run backend_restore "$WORK/postgresql-${RUN_ID}.dump.gz"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$WORK/pg_restore.args")" == *'--list'* ]]
+  [[ "$(cat "$WORK/pg_restore.args")" == *'--create'* ]]
 }

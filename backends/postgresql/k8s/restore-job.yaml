@@ -1,7 +1,9 @@
 # One-shot restore for postgresql. Reuses the CronJob's Secret, so the object store
 # settings cannot drift between backup and restore.
 #
-# Set RESTORE_DROP=true to drop and recreate the database first, or RESTORE_CLEAN=true to pass --clean --if-exists.
+# Set RESTORE_DROP=true to replace the database, or RESTORE_CLEAN=true to clean objects.
+# Set RESTORE_CREATE=true to restore database properties under the same name.
+# Set RESTORE_NO_OWNER=true to skip archived owners and grants.
 #
 #   kubectl apply -f backends/postgresql/k8s/restore-job.yaml
 #   kubectl logs -f job/postgresql-restore -n <your-namespace>

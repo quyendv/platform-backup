@@ -57,6 +57,21 @@ has to be rebuilt from the same snapshot with its own name and peer URL. A
 container talking to a running cluster cannot do that, so `MODE=restore` exits
 with an error rather than pretending.
 
+Every case below points `S3_PREFIX` at the backup being restored.
+`RESTORE_TIMESTAMP` picks a run (default: newest; see
+[the main README](../../README.md#environment) for the exact format).
+Quiesce clients and stop etcd before rebuilding the members.
+
+| Scenario | Set | Notes |
+|---|---|---|
+| Roll back the same cluster | `MODE=fetch`; run `etcdutl snapshot restore` on each stopped member | Rebuild every member from the same snapshot, with its own name and peer URL. |
+| New/empty cluster | `MODE=fetch`; restore each member's data directory before starting it | The image only fetches; member names, peer URLs and data directories are supplied to `etcdutl` on the hosts. |
+| Different target cluster | `MODE=fetch`; set target `--name`, `--initial-cluster`, `--initial-advertise-peer-urls` and `--data-dir` | Restore on the target hosts, not through `ETCDCTL_ENDPOINTS` against a running cluster. |
+
+Permissions: backup needs readable client certificates and key files; the
+kubeadm server key is root-readable only. Host-side restore needs permission
+to write each member's data directory and to stop and start etcd.
+
 Fetch the snapshot with this image, then restore on each control-plane host:
 
 ```bash

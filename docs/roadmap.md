@@ -36,3 +36,24 @@ for the full size in time, upload and storage.
       append-mostly and suits this well.
 - [ ] Add a restore drill to `test:integration`, and measure backup and restore
       on a synthetic tree before documenting any numbers.
+
+## PostgreSQL: several databases in one job
+
+One job backs up one database today.
+
+- [ ] Decide what is worth orchestrating across databases beyond running one
+      job per database.
+- [ ] Decide where globals belong: one shared dump or one alongside each
+      database, and how restore finds and applies them.
+
+## PostgreSQL: faster dump and restore of large databases
+
+The custom-format dump is single-threaded, and restore streams through a pipe,
+which cannot use `pg_restore -j`.
+
+- [ ] Measure dump and restore on a synthetic dataset first to identify the
+      bottleneck before changing the artifact format.
+- [ ] Evaluate a directory format for parallel dump, or a seekable archive for
+      parallel restore, including the local disk space each needs.
+- [ ] Decide how the format fits verification, compression, upload and fetch
+      before adding parallelism controls.

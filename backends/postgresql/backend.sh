@@ -22,8 +22,15 @@ backend_validate() {
   : "${POSTGRES_MAINTENANCE_DB:=postgres}"
   : "${POSTGRES_DUMP_GLOBALS:=true}"
   : "${RESTORE_GLOBALS:=false}"
+  : "${RESTORE_CREATE:=false}"
+  : "${RESTORE_NO_OWNER:=false}"
   bool_is_true POSTGRES_DUMP_GLOBALS || true
   bool_is_true RESTORE_GLOBALS || true
+  bool_is_true RESTORE_CREATE || true
+  bool_is_true RESTORE_NO_OWNER || true
+  if [[ "${MODE:-backup}" == restore ]] && bool_is_true RESTORE_CREATE && bool_is_true RESTORE_CLEAN; then
+    die "RESTORE_CREATE and RESTORE_CLEAN cannot both be true in restore mode"
+  fi
 }
 
 # _is_superuser — only a superuser can read role passwords.
@@ -99,6 +106,17 @@ backend_verify() {
   }
 }
 
+# Drain after --list, as in backend_verify, to keep gunzip from receiving SIGPIPE.
+_archive_database() {
+  gunzip -c "$1" | {
+    local rc=0 listing
+    listing="$(pg_restore --list)" || rc=$?
+    cat >/dev/null
+    [[ "$rc" -eq 0 ]] || return "$rc"
+    printf '%s\n' "$listing" | sed -n 's/^;[[:space:]]*dbname: //p'
+  }
+}
+
 # _without_role NAME < globals — drops the CREATE ROLE and ALTER ROLE lines of
 # one role, whether pg_dumpall quoted its name or not. Memberships stay.
 _without_role() {
@@ -117,13 +135,34 @@ backend_restore() {
   mapfile -t args < <(_conn_args)
   args+=(--no-password)
 
+  if bool_is_true RESTORE_CREATE; then
+    local archive_db exists
+    archive_db="$(_archive_database "$file")" || die "pg_restore --list failed while reading the archive database name"
+    [[ "$archive_db" == "$POSTGRES_DB" ]] ||
+      die "Archive database '${archive_db}' differs from POSTGRES_DB='${POSTGRES_DB}'; unset RESTORE_CREATE to restore under another name"
+    if ! bool_is_true RESTORE_DROP; then
+      exists="$(
+        psql "${args[@]}" -d "$POSTGRES_MAINTENANCE_DB" -tA -v ON_ERROR_STOP=1 -v name="$POSTGRES_DB" <<'SQL'
+SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'name');
+SQL
+      )" || die "psql failed checking whether database '${POSTGRES_DB}' exists"
+      [[ "$exists" == f ]] ||
+        die "Database '${POSTGRES_DB}' already exists with RESTORE_DROP=${RESTORE_DROP:-false}; set RESTORE_DROP=true to replace it"
+    fi
+  fi
+
   if bool_is_true RESTORE_DROP; then
+    local create_database=""
+    if ! bool_is_true RESTORE_CREATE; then
+      create_database="CREATE DATABASE \"${POSTGRES_DB}\";"
+      log_info "Plain RESTORE_DROP: owner, encoding, grants and database-level settings are not restored; RESTORE_CREATE restores them"
+    fi
     log_warn "RESTORE_DROP is set — dropping and recreating ${POSTGRES_DB}"
     psql "${args[@]}" -d "$POSTGRES_MAINTENANCE_DB" -v ON_ERROR_STOP=1 -q <<SQL
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity
  WHERE datname = '${POSTGRES_DB}' AND pid <> pg_backend_pid();
 DROP DATABASE IF EXISTS "${POSTGRES_DB}";
-CREATE DATABASE "${POSTGRES_DB}";
+${create_database}
 SQL
   fi
 
@@ -143,6 +182,12 @@ SQL
   fi
 
   local restore_args=("${args[@]}" -d "$POSTGRES_DB")
+  if bool_is_true RESTORE_CREATE; then
+    restore_args=("${args[@]}" -d "$POSTGRES_MAINTENANCE_DB" --create)
+  fi
+  if bool_is_true RESTORE_NO_OWNER; then
+    restore_args+=(--no-owner --no-acl)
+  fi
   if bool_is_true RESTORE_CLEAN; then
     restore_args+=(--clean --if-exists)
   fi

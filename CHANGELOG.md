@@ -9,6 +9,16 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+### Added
+
+- **postgresql: `RESTORE_CREATE`** restores database-level properties with
+  `pg_restore --create`, checking the archive name and refusing an existing
+  database unless `RESTORE_DROP=true`.
+- **postgresql: `RESTORE_NO_OWNER`** skips archived owners and grants with
+  `--no-owner --no-acl` for restores as an unprivileged role.
+- Restore scenario tables and permissions guidance for PostgreSQL, MongoDB,
+  Redis, etcd, Vault and SQLite.
+
 ### Fixed
 
 - **postgresql: the readiness probe names the database.** Without `-d`, a user
@@ -18,6 +28,12 @@ between minor versions. Each change will be listed here with its migration.
   The check ran before the driver starts recording, so a scheduled backup that
   failed it left no `.last-run.json` and sent no notification. Restore still
   checks before downloading the artifact.
+- **mongodb: a URI naming a database the archive does not hold now fails the
+  restore.** `mongorestore` exits 0 having restored nothing, and the run
+  reported success.
+- **redis: restoring a database number the backup has no keys in now fails**
+  before anything changes. It reported "Restored 0 keys" as success, and with
+  `RESTORE_FLUSH=true` had already emptied the target.
 
 ## [0.8.0] — 2026-10-24
 
