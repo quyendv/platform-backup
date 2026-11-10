@@ -70,11 +70,17 @@ backend_validate() {
   require_int REDIS_STAGE_TIMEOUT
   ((REDIS_STAGE_TIMEOUT > 0)) || die "REDIS_STAGE_TIMEOUT must be at least 1 second"
 
-  # Fetch only reads the object store. Its use is the offline restore, an RDB
-  # placed into a server that is stopped or not created yet, so a reachable
-  # server is exactly what it cannot require.
-  [[ "${MODE:-backup}" == "fetch" ]] && return 0
+  # Restore only, so it fails before downloading the artifact. Backup checks in
+  # backend_dump: the driver records nothing until validation is over, so a
+  # failure here would leave no state file and send no notification. Fetch only
+  # reads the object store, for a server that may not exist yet.
+  if [[ "${MODE:-backup}" == "restore" ]]; then
+    _redis_check_server
+  fi
+}
 
+# _redis_check_server: the server answers and is not part of a cluster.
+_redis_check_server() {
   _redis ping 2>/dev/null | grep -q PONG ||
     die "Cannot reach Redis at $(_redis_url_part host):$(_redis_url_part port)"
 
@@ -100,6 +106,7 @@ HINT
 backend_dump() {
   local dir="$1" name="redis-${RUN_ID}.rdb.zst"
 
+  _redis_check_server
   log_info "redis-cli: $(redis-cli --version)"
   # Checked explicitly: this function ends by echoing the filename, so its own
   # status would otherwise reflect that echo rather than the transfer.

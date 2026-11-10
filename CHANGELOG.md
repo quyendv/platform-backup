@@ -9,6 +9,16 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+### Fixed
+
+- **postgresql: the readiness probe names the database.** Without `-d`, a user
+  with no database of its own name left a `FATAL` in the server's log on every
+  run. Backups themselves were never affected.
+- **redis: an unreachable server or a cluster now fails a recorded backup.**
+  The check ran before the driver starts recording, so a scheduled backup that
+  failed it left no `.last-run.json` and sent no notification. Restore still
+  checks before downloading the artifact.
+
 ## [0.8.0] — 2026-10-24
 
 ### Changed

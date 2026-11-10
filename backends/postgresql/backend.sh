@@ -60,7 +60,8 @@ backend_dump() {
   local args=()
   mapfile -t args < <(_conn_args)
 
-  pg_isready "${args[@]}" -q ||
+  # Without -d the server looks for a database named after the user, and logs a FATAL.
+  pg_isready "${args[@]}" -d "$POSTGRES_DB" -q ||
     die "Cannot reach PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
   log_info "pg_dump: $(pg_dump --version)"
 
