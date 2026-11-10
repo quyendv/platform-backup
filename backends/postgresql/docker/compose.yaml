@@ -58,6 +58,31 @@ services:
     # networks: [db]
     restart: "no"
 
+  # Manual migration; no scheduled backup volume is mounted.
+  migrate:
+    profiles: [manual]
+    image: *image
+    env_file: .env
+    environment:
+      MODE: migrate
+      SCHEDULE: ""
+      BACKUP_DIR: /tmp/backup
+      DEST_POSTGRES_HOST: ${DEST_POSTGRES_HOST:-}
+      DEST_POSTGRES_PORT: ${DEST_POSTGRES_PORT:-5432}
+      DEST_POSTGRES_USER: ${DEST_POSTGRES_USER:-}
+      DEST_POSTGRES_PASSWORD: ${DEST_POSTGRES_PASSWORD:-}
+      DEST_POSTGRES_DB: ${DEST_POSTGRES_DB:-}
+      DEST_POSTGRES_MAINTENANCE_DB: ${DEST_POSTGRES_MAINTENANCE_DB:-postgres}
+      MIGRATE_DROP: ${MIGRATE_DROP:-false}
+      MIGRATE_VERIFY: ${MIGRATE_VERIFY:-true}
+      RESTORE_GLOBALS: ${RESTORE_GLOBALS:-false}
+      RESTORE_CREATE: ${RESTORE_CREATE:-false}
+      RESTORE_NO_OWNER: ${RESTORE_NO_OWNER:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # networks: [db]
+    restart: "no"
+
 volumes:
   backup:
 

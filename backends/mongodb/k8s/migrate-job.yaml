@@ -1,0 +1,34 @@
+# One-shot copy; configure source and destination in the referenced Secret.
+# Stop writes, migrate, verify, then point clients at the destination.
+# Set DEST_MONGODB_URI alongside MONGODB_URI in the referenced Secret.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongodb-migrate
+  namespace: <your-namespace>
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/quyendv/platform-backup/mongodb:0.9.0
+          imagePullPolicy: Always
+          env:
+            - name: MODE
+              value: "migrate"
+            - name: SCHEDULE
+              value: ""
+            - name: BACKUP_DIR
+              value: "/backup"
+          envFrom:
+            - secretRef:
+                name: mongodb-backup
+          volumeMounts:
+            - name: state
+              mountPath: /backup
+      volumes:
+        # Keep migration state separate from any scheduled backup volume.
+        - name: state
+          emptyDir: {}

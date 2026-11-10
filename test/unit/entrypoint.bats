@@ -114,3 +114,14 @@ run_entrypoint() {
 
   [ "$status" -ne 0 ]
 }
+
+@test "MODE=migrate ignores SCHEDULE and runs once" {
+  cat >>"$APP_DIR/backend.sh" <<'BACKEND'
+backend_caps() { printf 'fetch restore migrate'; }
+backend_migrate() { printf 'migration\n' >"$BACKUP_DIR/migrated"; }
+BACKEND
+  run_entrypoint MODE=migrate SCHEDULE='0 */4 * * *'
+  [ "$status" -eq 0 ]
+  [ ! -f "$BATS_TEST_TMPDIR/supercronic-call" ]
+  [ "$(cat "$BACKUP_DIR/migrated")" = migration ]
+}

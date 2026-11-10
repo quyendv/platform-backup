@@ -94,9 +94,10 @@ _notify_duration() {
 
 # Email subject: scannable in an inbox list, and plain so no client mangles it.
 _notify_subject() {
-  local outcome="$1" backend="$2"
-  printf '[%s] %s backup on %s' \
-    "$(_notify_status_word "$outcome")" "$backend" "${BACKUP_HOST:-$(hostname)}"
+  local outcome="$1" backend="$2" action=backup
+  if [[ "${MODE:-backup}" == migrate ]]; then action=migrate; fi
+  printf '[%s] %s %s on %s' \
+    "$(_notify_status_word "$outcome")" "$backend" "$action" "${BACKUP_HOST:-$(hostname)}"
 }
 
 _notify_truncate() {
@@ -134,6 +135,8 @@ _notify_body() {
     "$(_notify_status_icon "$_N_OUTCOME")" "${BACKUP_HOST:-$(hostname)}" \
     "$_N_BACKEND" "$(_notify_status_word "$_N_OUTCOME")")"
 
+  if [[ "${MODE:-backup}" == migrate ]]; then header="${header} (migrate)"; fi
+
   case "$flavour" in
     html) header="<b>$(_notify_escape_html "$header")</b>" ;;
     markdown) header="*${header}*" ;;
@@ -142,7 +145,9 @@ _notify_body() {
   printf '%s\n\n' "$header"
   # Padded to the longest key so the colons line up.
   printf '%-8s: %s UTC\n' 'Run' "${_N_RUN_ID:-n/a}"
-  printf '%-8s: %s\n' 'Target' "${_N_TARGET:-unknown}"
+  if [[ "${MODE:-backup}" != migrate ]]; then
+    printf '%-8s: %s\n' 'Target' "${_N_TARGET:-unknown}"
+  fi
   printf '%-8s: %s' 'Duration' "$(_notify_duration "${_N_DURATION:-0}")"
 
   [[ "$_N_OUTCOME" == "failure" ]] || return 0
@@ -197,6 +202,7 @@ _notify_telegram() {
 # One host backing several databases to different prefixes needs this to tell
 # the messages apart.
 _notify_target() {
+  if [[ "${MODE:-backup}" == migrate ]]; then return 0; fi
   if [[ -n "${S3_BUCKET:-}" ]]; then
     printf 's3://%s/%s' "$S3_BUCKET" "${S3_PREFIX:-}"
   else

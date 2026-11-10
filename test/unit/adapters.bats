@@ -315,6 +315,19 @@ LOG
 
 # --- postgresql: globals -------------------------------------------------------
 
+@test "globals filter removes a role whose quoted name holds a space" {
+  source "$REPO_ROOT/backends/postgresql/backend.sh"
+
+  run _without_role "app user" <<'SQL'
+CREATE ROLE "app user";
+ALTER ROLE "app user" WITH LOGIN PASSWORD 'x';
+CREATE ROLE "app user2";
+SQL
+
+  [ "$status" -eq 0 ]
+  [ "$output" = 'CREATE ROLE "app user2";' ]
+}
+
 # A stub that reads its stdin to the end, as the real tool does. One that exits
 # without reading races the writer into SIGPIPE, which pipefail reports as a
 # failure — on CI, not on a fast laptop.

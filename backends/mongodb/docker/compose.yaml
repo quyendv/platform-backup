@@ -54,6 +54,21 @@ services:
     # networks: [db]
     restart: "no"
 
+  # Manual migration; no scheduled backup volume is mounted.
+  migrate:
+    profiles: [manual]
+    image: *image
+    env_file: .env
+    environment:
+      MODE: migrate
+      SCHEDULE: ""
+      BACKUP_DIR: /tmp/backup
+      DEST_MONGODB_URI: ${DEST_MONGODB_URI:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # networks: [db]
+    restart: "no"
+
 volumes:
   backup:
 

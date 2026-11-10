@@ -20,6 +20,10 @@ stringData:
   # The URI carries the credentials, which is why this is a Secret.
   MONGODB_URI: "mongodb://user:pass@mongodb.<your-namespace>.svc.cluster.local:27017/?authSource=admin"
 
+  # Migration-only settings, shared with migrate-job.yaml.
+  # Destination URI; required in migrate.
+  # DEST_MONGODB_URI: ""
+
   # ── Object storage ─────────────────────────────────────────────────────────
   # Read by the AWS CLI itself. Omit both keys entirely to authenticate with an
   # IRSA service account or an instance role instead.
