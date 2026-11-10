@@ -9,6 +9,8 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-10
+
 ### Added
 
 - **postgresql: `RESTORE_CREATE`** restores database-level properties with
