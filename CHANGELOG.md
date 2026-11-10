@@ -13,6 +13,13 @@ between minor versions. Each change will be listed here with its migration.
 
 ### Added
 
+- **`MODE=migrate` for PostgreSQL and MongoDB:** stream a one-time copy directly
+  between servers without S3 or an intermediate archive, with destination
+  guards, copy verification, recorded outcomes and notifications. Includes
+  manual Compose services and Kubernetes Jobs. PostgreSQL supports guarded
+  replacement, globals and database properties; MongoDB supports renaming and
+  replica-set oplog replay into an empty destination.
+
 - **postgresql: `RESTORE_CREATE`** restores database-level properties with
   `pg_restore --create`, checking the archive name and refusing an existing
   database unless `RESTORE_DROP=true`.

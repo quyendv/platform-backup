@@ -1,0 +1,35 @@
+# One-shot copy; configure source and destination in the referenced Secret.
+# Stop writes, migrate, verify, then point clients at the destination.
+# DEST_POSTGRES_* and MIGRATE_* use the Secret values and adapter defaults.
+# RESTORE_GLOBALS, RESTORE_CREATE and RESTORE_NO_OWNER are read from the Secret.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgresql-migrate
+  namespace: <your-namespace>
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/quyendv/platform-backup/postgresql:0.9.0-pg17
+          imagePullPolicy: Always
+          env:
+            - name: MODE
+              value: "migrate"
+            - name: SCHEDULE
+              value: ""
+            - name: BACKUP_DIR
+              value: "/backup"
+          envFrom:
+            - secretRef:
+                name: postgresql-backup
+          volumeMounts:
+            - name: state
+              mountPath: /backup
+      volumes:
+        # Keep migration state separate from any scheduled backup volume.
+        - name: state
+          emptyDir: {}

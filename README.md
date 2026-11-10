@@ -31,7 +31,7 @@ Each backend documents itself next to its own code:
 
 ```bash
 docker run --rm \
-  -e POSTGRES_HOST=db.internal -e POSTGRES_USER=postgres \
+  -e POSTGRES_HOST=db.example.com -e POSTGRES_USER=postgres \
   -e POSTGRES_PASSWORD=secret  -e POSTGRES_DB=appdb \
   -e AWS_ACCESS_KEY_ID=xxx -e AWS_SECRET_ACCESS_KEY=yyy \
   -e AWS_ENDPOINT_URL_S3=https://minio.example.com \
@@ -84,6 +84,7 @@ of restore scenarios.
 | `backup` *(default)* | dump, upload, prune | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `fetch` | download and verify a run into `RESTORE_DIR`, touching nothing else | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `restore` | write a backup into the live target | ✅ | ✅ | ✅* | ✅ | ❌ | ✅† | ✅‡ |
+| `migrate` | stream a one-time copy directly between servers | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 etcd refuses `restore`: restoring etcd rewrites the data directory of a
 *stopped* member, so it cannot be done from a container against a live cluster.
@@ -100,7 +101,16 @@ See [backends/sqlite/](backends/sqlite/).
 `FILES_RESTORE_OVERWRITE=true`, and never deletes anything. See
 [backends/files/](backends/files/).
 
-`fetch` and `restore` ignore `SCHEDULE` and always run once.
+`fetch`, `restore` and `migrate` ignore `SCHEDULE` and always run once.
+
+`migrate` needs no S3 bucket or intermediate archive. Stop writes on both sides,
+run the copy, verify it, then point the application at the destination. Writes
+on the source after the copy has been read do not reach the destination. Migration
+records `.last-run.json` in `BACKUP_DIR` and sends notifications; never mount a
+scheduled backup's volume into a migration job. PostgreSQL can skip exact
+verification with `MIGRATE_VERIFY=false` for a live staging clone or a very
+large database. See the [PostgreSQL](backends/postgresql/#migrate) and
+[MongoDB](backends/mongodb/#migrate) runbooks.
 
 **Restore assumes no traffic.** None of these restores are atomic: writes
 arriving while one runs interleave with the data being restored, and afterwards
@@ -142,7 +152,7 @@ an `~/.aws/config` containing `s3.addressing_style`.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `MODE` | `backup` | `backup` / `fetch` / `restore` |
+| `MODE` | `backup` | `backup` / `fetch` / `restore` / `migrate` |
 | `SCHEDULE` | *(empty)* | Cron expression; empty runs once and exits |
 | `S3_BUCKET` | *(empty)* | **Empty keeps backups local only** |
 | `S3_PREFIX` | `backups/<backend>` | Key prefix inside the bucket |
@@ -156,6 +166,12 @@ an `~/.aws/config` containing `s3.addressing_style`.
 | `VERIFY_READBACK` | `false` | After upload, stream every object back and compare its SHA-256 before marking the run complete. Costs one download per run |
 | `BACKUP_HOST` | the container's hostname | Recorded in `.last-run.json`, `_COMPLETE` and notifications; set it to a cluster or host name that means something |
 | `MIN_ARTIFACT_BYTES` | `128` | Floor below which a dump is treated as failed |
+| `DEST_POSTGRES_HOST`, `DEST_POSTGRES_USER`, `DEST_POSTGRES_PASSWORD`, `DEST_POSTGRES_DB` | *(required in migrate)* | PostgreSQL destination connection; existing `POSTGRES_*` name the source |
+| `DEST_POSTGRES_PORT` | `5432` | PostgreSQL migration destination port |
+| `DEST_POSTGRES_MAINTENANCE_DB` | `postgres` | PostgreSQL migration maintenance connection |
+| `MIGRATE_DROP` | `false` | PostgreSQL: replace the destination database after safety checks; MongoDB refuses true |
+| `MIGRATE_VERIFY` | `true` | PostgreSQL: exact table row and large-object counts after copying |
+| `DEST_MONGODB_URI` | *(required in migrate)* | MongoDB destination; `MONGODB_URI` names the source |
 
 Backend-specific variables are documented on each backend's page.
 

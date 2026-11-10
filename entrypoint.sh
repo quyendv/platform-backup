@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Container entrypoint, shared by all four images.
+# Container entrypoint, shared by all images.
 #
 # Dispatch, in order:
 #   `entrypoint.sh run`  -> one run, ignoring SCHEDULE (this is what cron calls)
-#   MODE=fetch|restore   -> one run, ignoring SCHEDULE
+#   MODE=fetch|restore|migrate -> one run, ignoring SCHEDULE
 #   SCHEDULE set         -> hand over to supercronic
 #   otherwise            -> one run
 set -euo pipefail

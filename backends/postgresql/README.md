@@ -35,6 +35,14 @@ move a 14 deployment onto current images ahead of a server upgrade.
 | `RESTORE_CLEAN` | | `false` | Pass `--clean --if-exists` to `pg_restore` |
 | `POSTGRES_DUMP_GLOBALS` | | `true` | Also write `pg_dumpall --globals-only` (roles, memberships, tablespaces) as `globals-<run>.sql.gz`. Without superuser rights it adds `--no-role-passwords` |
 | `RESTORE_GLOBALS` | | `false` | Apply the run's globals before restoring. For a fresh server: on a live one it would overwrite roles changed since the backup |
+| `DEST_POSTGRES_HOST` | in migrate | — | Destination host; required in migrate |
+| `DEST_POSTGRES_PORT` |  | `5432` | Destination port |
+| `DEST_POSTGRES_USER` | in migrate | — | Destination user; required in migrate |
+| `DEST_POSTGRES_PASSWORD` | in migrate | — | Destination password; required in migrate |
+| `DEST_POSTGRES_DB` | in migrate | — | Destination database; required in migrate |
+| `DEST_POSTGRES_MAINTENANCE_DB` |  | `postgres` | Destination maintenance database |
+| `MIGRATE_DROP` |  | `false` | Replace the destination database after guards |
+| `MIGRATE_VERIFY` |  | `true` | Compare exact table and large-object counts |
 
 Plus the [shared variables](../../README.md#environment).
 
@@ -157,3 +165,66 @@ survives and "previous outcome" is always unknown — `change` would fire on
 every run, and a recovery message can never be sent. Failures notify either
 way, which is the part that matters. Mount a PersistentVolumeClaim at
 `/backup` if you want both.
+
+## Migrate
+
+Set `MODE=migrate` for a one-time streamed copy without S3 or an intermediate
+archive. Existing `POSTGRES_*` variables name the source; `DEST_POSTGRES_*`
+name the destination. Both servers stay running. Stop writes on both sides,
+migrate, verify, then point the application at the destination. Changes on the
+source after copying starts do not reach the destination. Errors applying
+`RESTORE_GLOBALS` appear in the log and do not stop the copy, as in restore. For a live rehearsal
+or staging clone, set `MIGRATE_VERIFY=false`.
+
+Use the image of the **destination's major version when upgrading**. `pg_dump`
+must be at least the source's major, and `pg_restore` must not be newer than the
+destination supports: 17+ sends `SET transaction_timeout`, which 15 and 16
+reject. Downgrades are not supported.
+
+| Destination | Set | Result |
+|---|---|---|
+| Fresh server, same database name | `RESTORE_GLOBALS=true RESTORE_CREATE=true` | Carries roles and database properties; source and destination database names must match |
+| Another database name | `DEST_POSTGRES_DB=clone` | Plain database creation if absent; owner, encoding, grants and database-level settings are not carried |
+| Existing empty platform database | `RESTORE_NO_OWNER=true` | Skips archived owners and grants; objects belong to the destination user |
+| Replace an existing database | `MIGRATE_DROP=true` | Terminates sessions and drops it only after identity and destination checks |
+
+Without `MIGRATE_DROP`, a non-empty destination is refused. Relations outside
+system schemas count as non-empty, except extension members, so pre-installed
+platform extensions alone do not block a copy. `RESTORE_CREATE` also refuses
+any existing destination unless `MIGRATE_DROP=true`. The same database on the
+same postmaster is refused even through a hostname alias; a different database
+on that server is allowed.
+
+`RESTORE_GLOBALS` streams roles first, omitting the destination connecting role's
+CREATE/ALTER lines. Existing roles are reported and kept as in restore; globals
+from a non-superuser omit role passwords. The source needs backup permissions
+above. The destination needs ownership and `CREATEDB` for creation/replacement,
+rights to terminate other sessions for replacement, and the permissions above
+for globals, owners and grants. `RESTORE_CLEAN` and `RESTORE_DROP` are unused in
+migrate; use `MIGRATE_DROP` for replacement.
+
+Verification defaults to exact counts of each ordinary table outside system
+schemas and the number of large objects. It scans every table on both sides;
+set `MIGRATE_VERIFY=false` for a very large database if that cost is unsuitable.
+Counts are ordered with `COLLATE "C"` under `PGCLIENTENCODING=UTF8`. Differences
+fail the run and name up to 20 tables; a still-written source is the usual
+cause. `pg_restore` statement failures also fail the run.
+
+Configure both connections in the Compose environment file, then run:
+
+```bash
+docker compose run --rm migrate
+# Replace only after checking the destination settings:
+docker compose run --rm -e MIGRATE_DROP=true migrate
+```
+
+For Kubernetes, configure the migration variables in the referenced Secret and
+use [`k8s/migrate-job.yaml`](k8s/migrate-job.yaml). Choose the destination major's
+image tag there too. `SCHEDULE` is ignored: migration always runs once. It writes
+`.last-run.json` in `BACKUP_DIR` and uses normal notifications. Do not mount a
+scheduled backup's volume into the migration job; the shipped examples keep
+its state separate.
+
+A failed copy leaves a partial destination and has no resume operation. Inspect
+it, then drop the destination database by hand before retrying, or deliberately
+retry with `MIGRATE_DROP=true`. Keep clients stopped until verification succeeds.

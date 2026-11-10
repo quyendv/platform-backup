@@ -57,3 +57,13 @@ which cannot use `pg_restore -j`.
       parallel restore, including the local disk space each needs.
 - [ ] Decide how the format fits verification, compression, upload and fetch
       before adding parallelism controls.
+
+## Migration beyond PostgreSQL and MongoDB
+
+- [ ] Redis `MODE=migrate`: copy directly between servers, with identity guards
+      before destructive operations and verification of the resulting keys.
+- [ ] Evaluate migrate for etcd, Vault, SQLite and files separately; these
+      backends currently refuse the mode.
+- [ ] For continuous replication or near-zero downtime, use PostgreSQL logical
+      replication or MongoDB `mongosync` instead of a one-time copy. Assess a
+      separate long-running workflow before adding replication orchestration.

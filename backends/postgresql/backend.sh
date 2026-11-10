@@ -7,7 +7,7 @@
 # Sourced by lib/main.sh, which has already loaded lib/log.sh and lib/env.sh.
 
 backend_name() { printf 'postgresql'; }
-backend_caps() { printf 'fetch restore'; }
+backend_caps() { printf 'fetch restore migrate'; }
 
 # Connection flags shared by every client. --no-password is deliberately not
 # here: pg_isready does not accept it, and PGPASSWORD covers authentication for
@@ -30,6 +30,22 @@ backend_validate() {
   bool_is_true RESTORE_NO_OWNER || true
   if [[ "${MODE:-backup}" == restore ]] && bool_is_true RESTORE_CREATE && bool_is_true RESTORE_CLEAN; then
     die "RESTORE_CREATE and RESTORE_CLEAN cannot both be true in restore mode"
+  fi
+  if [[ "${MODE:-backup}" == migrate ]]; then
+    require_env DEST_POSTGRES_HOST DEST_POSTGRES_USER DEST_POSTGRES_PASSWORD DEST_POSTGRES_DB
+    : "${DEST_POSTGRES_PORT:=5432}"
+    : "${DEST_POSTGRES_MAINTENANCE_DB:=postgres}"
+    : "${MIGRATE_DROP:=false}"
+    : "${MIGRATE_VERIFY:=true}"
+    bool_is_true MIGRATE_DROP || true
+    bool_is_true MIGRATE_VERIFY || true
+    # Used literally in SQL, so a connection string would name a different database there.
+    if [[ "$DEST_POSTGRES_DB" == *=* || "$DEST_POSTGRES_DB" == *://* ]]; then
+      die "DEST_POSTGRES_DB must be a plain database name, not a connection string"
+    fi
+    if bool_is_true RESTORE_CREATE && [[ "$POSTGRES_DB" != "$DEST_POSTGRES_DB" ]]; then
+      die "RESTORE_CREATE requires equal source and destination database names"
+    fi
   fi
 }
 
@@ -120,11 +136,17 @@ _archive_database() {
 # _without_role NAME < globals — drops the CREATE ROLE and ALTER ROLE lines of
 # one role, whether pg_dumpall quoted its name or not. Memberships stay.
 _without_role() {
-  awk -v plain="$1" -v quoted="\"$1\"" '
-    ($1 == "CREATE" || $1 == "ALTER") && $2 == "ROLE" {
-      name = $3
-      sub(/;$/, "", name)
-      if (name == plain || name == quoted) next
+  awk -v plain="$1" '
+    function names(line, id, n, c) {
+      n = length(id)
+      c = substr(line, n + 1, 1)
+      return substr(line, 1, n) == id && (c == " " || c == ";" || c == "")
+    }
+    BEGIN { quoted = plain; gsub(/"/, "\"\"", quoted); quoted = "\"" quoted "\"" }
+    /^(CREATE|ALTER) ROLE / {
+      id = $0
+      sub(/^[A-Z]+ ROLE /, "", id)
+      if (names(id, plain) || names(id, quoted)) next
     }
     { print }'
 }
@@ -194,4 +216,126 @@ SQL
 
   log_info "pg_restore: $(pg_restore --version)"
   gunzip -c "$file" | pg_restore "${restore_args[@]}"
+}
+
+# Exact counts use server-side identifier quoting and a fixed client encoding and order.
+_migrate_counts() {
+  PGCLIENTENCODING=UTF8 psql "$@" --no-password -tA -v ON_ERROR_STOP=1 <<'SQL'
+SELECT command FROM (
+  SELECT format('SELECT %L, count(*) FROM %I.%I;',
+    format('%I.%I', ns.nspname, c.relname), ns.nspname, c.relname) AS command,
+    format('%I.%I', ns.nspname, c.relname) AS name
+  FROM pg_class c JOIN pg_namespace ns ON ns.oid=c.relnamespace
+  WHERE c.relkind='r' AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
+    AND ns.nspname !~ '^pg_toast' AND ns.nspname !~ '^pg_temp'
+  UNION ALL
+  SELECT 'SELECT ''<large objects>'', count(*) FROM pg_largeobject_metadata;', '<large objects>'
+) commands ORDER BY name COLLATE "C"
+\gexec
+SQL
+}
+
+backend_migrate() {
+  local source=() dest=() source_start dest_start source_name exists nonempty
+  mapfile -t source < <(_conn_args)
+  # shellcheck disable=SC2153
+  dest=(-h "$DEST_POSTGRES_HOST" -p "$DEST_POSTGRES_PORT" -U "$DEST_POSTGRES_USER")
+  pg_isready "${source[@]}" -d "$POSTGRES_DB" -q || die "pg_isready failed for the source"
+  PGPASSWORD="$DEST_POSTGRES_PASSWORD" pg_isready "${dest[@]}" -d "$DEST_POSTGRES_MAINTENANCE_DB" -q ||
+    die "pg_isready failed for the destination"
+  source_start="$(
+    psql "${source[@]}" --no-password -d "$POSTGRES_DB" -tA -v ON_ERROR_STOP=1 <<'SQL'
+SELECT extract(epoch FROM pg_postmaster_start_time());
+SQL
+  )" || die "psql failed querying source postmaster identity"
+  dest_start="$(
+    PGPASSWORD="$DEST_POSTGRES_PASSWORD" psql "${dest[@]}" --no-password -d "$DEST_POSTGRES_MAINTENANCE_DB" -tA -v ON_ERROR_STOP=1 <<'SQL'
+SELECT extract(epoch FROM pg_postmaster_start_time());
+SQL
+  )" || die "psql failed querying destination postmaster identity"
+  # The connected name: POSTGRES_DB may be a libpq connection string.
+  source_name="$(
+    psql "${source[@]}" --no-password -d "$POSTGRES_DB" -tA -v ON_ERROR_STOP=1 <<'SQL'
+SELECT current_database();
+SQL
+  )" || die "psql failed querying the source database name"
+  if [[ "$source_start" == "$dest_start" && "$source_name" == "$DEST_POSTGRES_DB" ]]; then
+    die "Migration refused: source and destination are the same database"
+  fi
+  exists="$(
+    PGPASSWORD="$DEST_POSTGRES_PASSWORD" psql "${dest[@]}" --no-password -d "$DEST_POSTGRES_MAINTENANCE_DB" -tA -v ON_ERROR_STOP=1 -v name="$DEST_POSTGRES_DB" <<'SQL'
+SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'name');
+SQL
+  )" || die "psql failed checking destination database existence"
+  if [[ "$exists" == t ]] && ! bool_is_true MIGRATE_DROP; then
+    nonempty="$(
+      PGPASSWORD="$DEST_POSTGRES_PASSWORD" psql "${dest[@]}" --no-password -d "$DEST_POSTGRES_DB" -tA -v ON_ERROR_STOP=1 <<'SQL'
+SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE c.relkind IN ('r','p','v','m','S','f')
+ AND n.nspname NOT IN ('pg_catalog','information_schema')
+ AND n.nspname !~ '^pg_toast' AND n.nspname !~ '^pg_temp'
+ AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass
+   AND d.objid=c.oid AND d.deptype='e'));
+SQL
+    )" || die "psql failed checking destination database emptiness"
+    [[ "$nonempty" == f ]] || die "Destination database is non-empty; MIGRATE_DROP=true is required to replace it"
+    if bool_is_true RESTORE_CREATE; then
+      die "RESTORE_CREATE requires an absent destination database or MIGRATE_DROP=true"
+    fi
+  fi
+
+  if bool_is_true MIGRATE_DROP; then
+    log_warn "MIGRATE_DROP is set: terminating sessions and dropping the destination database"
+    PGPASSWORD="$DEST_POSTGRES_PASSWORD" psql "${dest[@]}" --no-password -d "$DEST_POSTGRES_MAINTENANCE_DB" -q -v ON_ERROR_STOP=1 -v name="$DEST_POSTGRES_DB" <<'SQL' || die "psql failed dropping the destination database"
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+ WHERE datname = :'name' AND pid <> pg_backend_pid();
+DROP DATABASE IF EXISTS :"name";
+SQL
+    exists=f
+  fi
+  local codes=() globals_extra=()
+  if bool_is_true RESTORE_GLOBALS; then
+    if ! _is_superuser; then globals_extra+=(--no-role-passwords); fi
+    log_info "Applying globals; roles that already exist are reported and kept"
+    if pg_dumpall "${source[@]}" --no-password -l "$POSTGRES_DB" --globals-only "${globals_extra[@]}" |
+      _without_role "$DEST_POSTGRES_USER" |
+      PGPASSWORD="$DEST_POSTGRES_PASSWORD" psql "${dest[@]}" --no-password -d "$DEST_POSTGRES_MAINTENANCE_DB" -q; then
+      codes=("${PIPESTATUS[@]}")
+    else
+      codes=("${PIPESTATUS[@]}")
+    fi
+    ((codes[0] == 0)) || die "pg_dumpall failed streaming globals"
+    ((codes[1] == 0)) || die "Filtering globals failed"
+    ((codes[2] == 0)) || die "psql failed applying globals"
+  fi
+  if ! bool_is_true RESTORE_CREATE && [[ "$exists" == f ]]; then
+    log_info "Creating an empty destination: owner, encoding, grants and database-level settings are not carried; RESTORE_CREATE carries them"
+    PGPASSWORD="$DEST_POSTGRES_PASSWORD" psql "${dest[@]}" --no-password -d "$DEST_POSTGRES_MAINTENANCE_DB" -q -v ON_ERROR_STOP=1 -v name="$DEST_POSTGRES_DB" <<'SQL' || die "psql failed creating the destination database"
+CREATE DATABASE :"name";
+SQL
+  fi
+  local restore=("${dest[@]}" --no-password -d "$DEST_POSTGRES_DB")
+  if bool_is_true RESTORE_CREATE; then
+    restore=("${dest[@]}" --no-password -d "$DEST_POSTGRES_MAINTENANCE_DB" --create)
+  fi
+  if bool_is_true RESTORE_NO_OWNER; then restore+=(--no-owner --no-acl); fi
+  if pg_dump "${source[@]}" --no-password -d "$POSTGRES_DB" --format=custom |
+    PGPASSWORD="$DEST_POSTGRES_PASSWORD" pg_restore "${restore[@]}"; then
+    codes=("${PIPESTATUS[@]}")
+  else
+    codes=("${PIPESTATUS[@]}")
+  fi
+  if ((codes[0] != 0)); then log_error "pg_dump failed streaming the source database (exit ${codes[0]})"; fi
+  if ((codes[1] != 0)); then log_error "pg_restore failed restoring the destination database (exit ${codes[1]})"; fi
+  ((codes[0] == 0 && codes[1] == 0)) || die "Database migration stream failed"
+  if bool_is_true MIGRATE_VERIFY; then
+    local source_counts dest_counts differences
+    source_counts="$(_migrate_counts "${source[@]}" -d "$POSTGRES_DB" -q)" || die "psql failed counting source rows"
+    dest_counts="$(PGPASSWORD="$DEST_POSTGRES_PASSWORD" _migrate_counts "${dest[@]}" -d "$DEST_POSTGRES_DB" -q)" || die "psql failed counting destination rows"
+    if [[ "$source_counts" != "$dest_counts" ]]; then
+      differences="$(diff -u <(printf '%s\n' "$source_counts") <(printf '%s\n' "$dest_counts") | sed -n '/^[+-][^+-]/p' | sed -n '1,20p' || true)"
+      log_error "Migration verification differs (up to 20 entries): ${differences}"
+      die "A still-written source is the usual cause of differing row counts"
+    fi
+  fi
 }

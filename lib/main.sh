@@ -281,6 +281,17 @@ do_restore() {
   log_ok "Restore complete"
 }
 
+do_migrate() {
+  backend_supports migrate || die "$(backend_name) does not support MODE=migrate in this image."
+  RUN_ID="$(date -u '+%Y%m%d_%H%M%S')"
+  if [[ -n "${RUN_ID_FILE:-}" ]]; then
+    printf '%s' "$RUN_ID" >"$RUN_ID_FILE"
+  fi
+  log_warn "Migration is a one-time copy: stop source and destination writes before starting"
+  backend_migrate
+  log_ok "Migration run ${RUN_ID} complete"
+}
+
 # Records the outcome and notifies, whatever happened. Wrapping main rather
 # than scattering calls through it means there is exactly one place where a
 # run's result is decided, and no path that forgets to report.
@@ -339,6 +350,7 @@ _dispatch_mode() {
     backup) _with_lock do_backup ;;
     fetch) do_fetch ;;
     restore) do_restore ;;
+    migrate) _with_lock do_migrate ;;
   esac
 }
 
@@ -348,8 +360,8 @@ main() {
   # typo in MODE surfaced as whatever env that backend happened to require,
   # pointing at the wrong problem.
   case "$MODE" in
-    backup | fetch | restore) ;;
-    *) die "Unknown MODE '${MODE}' (expected backup, fetch or restore)" ;;
+    backup | fetch | restore | migrate) ;;
+    *) die "Unknown MODE '${MODE}' (expected backup, fetch, restore or migrate)" ;;
   esac
 
   _validate_common

@@ -20,6 +20,9 @@ services:
 
   postgres:
     image: postgres:17-alpine
+    networks:
+      default:
+        aliases: [postgres-alias]
     environment:
       POSTGRES_PASSWORD: secret
       POSTGRES_DB: appdb
@@ -62,6 +65,18 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: secret
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # A separate destination keeps its own root credentials after a full copy.
+  mongo_destination:
+    image: mongo:8.0.12
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: destination_root
+      MONGO_INITDB_ROOT_PASSWORD: destination_password
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "-u", "destination_root", "-p", "destination_password", "--authenticationDatabase", "admin", "--eval", "db.adminCommand('ping').ok || quit(1)"]
       interval: 2s
       timeout: 5s
       retries: 30

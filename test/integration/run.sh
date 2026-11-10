@@ -67,6 +67,8 @@ services_for() {
     mongodb_oplog) printf 'mongors' ;;
     postgresql_owner | postgresql_restore_scenarios | completeness) printf 'postgres' ;;
     postgresql_versions) printf 'postgres15 postgres18' ;;
+    postgresql_migrate) printf 'postgres postgres15 postgres18' ;;
+    mongodb_migrate) printf 'mongo mongo_destination mongors' ;;
     redis) printf 'redis' ;;
     vault) printf 'vault' ;;
   esac
@@ -1078,9 +1080,221 @@ test_etcd() {
   done
 }
 
+# Migration images get no object-store settings or shared backup volume.
+migrate_image() {
+  local image="$1"
+  shift
+  docker run --rm --network "$NETWORK" -e MODE=migrate "$@" "$image"
+}
+
+migrate_pg_assert_rows() {
+  local service="$1" database="$2" expected="$3" label="$4" actual
+  actual="$(psql_on "$service" -d "$database" -c "SELECT string_agg(id::text || ':' || value, ',' ORDER BY id) FROM migrate_rows;")" ||
+    fail "postgresql_migrate: ${label}: cannot query rows"
+  [[ "$actual" == "$expected" ]] || fail "postgresql_migrate: ${label}: expected '${expected}', got '${actual}'"
+}
+
+test_postgresql_migrate() {
+  local image=ghcr.io/quyendv/platform-backup/postgresql:pg18
+  local env=(-e POSTGRES_HOST=postgres -e POSTGRES_PORT=5432
+    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=migrate_source
+    -e DEST_POSTGRES_HOST=postgres18 -e DEST_POSTGRES_USER=postgres
+    -e DEST_POSTGRES_PASSWORD=secret -e DEST_POSTGRES_DB=migrate_source)
+  local out rc properties settings
+  local properties_sql="SELECT pg_get_userbyid(datdba), pg_encoding_to_char(encoding), datcollate, datctype,
+    (SELECT string_agg(a::text, ',' ORDER BY a::text) FROM unnest(datacl) a)
+    FROM pg_database WHERE datname='migrate_source';"
+  local settings_sql="SELECT COALESCE(r.rolname, '<database>'), s.setconfig::text
+    FROM pg_db_role_setting s LEFT JOIN pg_roles r ON r.oid=s.setrole
+    WHERE s.setdatabase=(SELECT oid FROM pg_database WHERE datname='migrate_source')
+    ORDER BY r.rolname NULLS FIRST;"
+
+  psql_target -c "CREATE ROLE migrate_owner; CREATE ROLE migrate_reader;" || fail "postgresql_migrate: create source roles"
+  psql_target -c "CREATE DATABASE migrate_source OWNER migrate_owner ENCODING 'LATIN1' LOCALE 'C' TEMPLATE template0;" ||
+    fail "postgresql_migrate: create source database"
+  psql_target -c "REVOKE CONNECT ON DATABASE migrate_source FROM PUBLIC;
+    GRANT CONNECT ON DATABASE migrate_source TO migrate_reader;
+    ALTER DATABASE migrate_source SET work_mem='8MB';
+    ALTER ROLE migrate_reader IN DATABASE migrate_source SET statement_timeout='5s';" ||
+    fail "postgresql_migrate: source database properties"
+  psql_target -d migrate_source -c "SET ROLE migrate_owner;
+    CREATE TABLE migrate_rows (id int primary key, value text);
+    INSERT INTO migrate_rows VALUES (1,'alpha'),(2,'beta');
+    GRANT SELECT ON migrate_rows TO migrate_reader;" || fail "postgresql_migrate: seed source rows"
+  psql_target -d migrate_source -c "SELECT lo_from_bytea(0, decode('616263','hex'));" >/dev/null ||
+    fail "postgresql_migrate: seed source large object"
+  properties="$(psql_target -c "$properties_sql")" || fail "postgresql_migrate: read source database properties"
+  settings="$(psql_target -c "$settings_sql")" || fail "postgresql_migrate: read source database settings"
+  migrate_image "$image" "${env[@]}" -e RESTORE_CREATE=true -e RESTORE_GLOBALS=true >/dev/null ||
+    fail "postgresql_migrate: fresh same-name copy with globals and create"
+  migrate_pg_assert_rows postgres18 migrate_source '1:alpha,2:beta' 'fresh same-name copy'
+  [[ "$(psql_on postgres18 -c "$properties_sql")" == "$properties" ]] ||
+    fail "postgresql_migrate: fresh copy changed database owner, encoding, locale or grants"
+  [[ "$(psql_on postgres18 -c "$settings_sql")" == "$settings" ]] ||
+    fail "postgresql_migrate: fresh copy changed database or role-in-database settings"
+  [[ "$(psql_on postgres18 -d migrate_source -c 'SELECT count(*) FROM pg_largeobject_metadata;')" == 1 ]] ||
+    fail "postgresql_migrate: fresh copy lost the large object"
+  [[ "$(psql_on postgres18 -d migrate_source -c "SELECT has_table_privilege('migrate_reader','migrate_rows','SELECT');")" == t ]] ||
+    fail "postgresql_migrate: fresh copy lost reader grant"
+  pass "postgresql_migrate: fresh same-name copy carries globals, database properties and large objects"
+
+  migrate_image "$image" "${env[@]}" -e DEST_POSTGRES_DB=migrate_renamed >/dev/null ||
+    fail "postgresql_migrate: rename"
+  migrate_pg_assert_rows postgres18 migrate_renamed '1:alpha,2:beta' 'rename'
+  migrate_pg_assert_rows postgres migrate_source '1:alpha,2:beta' 'rename source intact'
+  pass "postgresql_migrate: rename copies rows and preserves source"
+
+  psql_on postgres18 -d migrate_renamed -c "INSERT INTO migrate_rows VALUES (99,'keep');" ||
+    fail "postgresql_migrate: seed refusal sentinel"
+  rc=0
+  out="$(migrate_image "$image" "${env[@]}" -e DEST_POSTGRES_DB=migrate_renamed 2>&1)" || rc=$?
+  [[ "$rc" -ne 0 && "$out" == *non-empty* ]] || fail "postgresql_migrate: nonempty guard did not refuse"
+  migrate_pg_assert_rows postgres18 migrate_renamed '1:alpha,2:beta,99:keep' 'nonempty refusal intact'
+  migrate_image "$image" "${env[@]}" -e DEST_POSTGRES_DB=migrate_renamed -e MIGRATE_DROP=true >/dev/null ||
+    fail "postgresql_migrate: drop replaces destination"
+  migrate_pg_assert_rows postgres18 migrate_renamed '1:alpha,2:beta' 'drop replacement'
+  pass "postgresql_migrate: refusal preserves data; opt-in drop replaces it"
+
+  rc=0
+  out="$(migrate_image "$image" "${env[@]}" -e DEST_POSTGRES_HOST=postgres-alias -e MIGRATE_DROP=true 2>&1)" || rc=$?
+  [[ "$rc" -ne 0 && "$out" == *'same database'* ]] || fail "postgresql_migrate: hostname alias not refused"
+  migrate_pg_assert_rows postgres migrate_source '1:alpha,2:beta' 'hostname alias refusal intact'
+  [[ "$(psql_target -c "$properties_sql")" == "$properties" ]] || fail "postgresql_migrate: alias refusal changed properties"
+  pass "postgresql_migrate: hostname alias refused before dropping"
+
+  psql_on postgres15 -c "CREATE DATABASE migrate_upgrade;" || fail "postgresql_migrate: upgrade source database"
+  psql_on postgres15 -d migrate_upgrade -c "CREATE TABLE migrate_rows (id int primary key, value text);
+    INSERT INTO migrate_rows VALUES (15,'upgrade');" || fail "postgresql_migrate: upgrade seed"
+  migrate_image "$image" "${env[@]}" -e POSTGRES_HOST=postgres15 -e POSTGRES_DB=migrate_upgrade \
+    -e DEST_POSTGRES_DB=migrate_upgrade -e RESTORE_CREATE=true >/dev/null || fail "postgresql_migrate: 15 to 18 using pg18"
+  migrate_pg_assert_rows postgres18 migrate_upgrade '15:upgrade' '15 to 18 using pg18'
+  pass "postgresql_migrate: pg18 copies PostgreSQL 15 to 18"
+
+  psql_on postgres18 -c "CREATE ROLE migrate_unprivileged LOGIN PASSWORD 'example';" ||
+    fail "postgresql_migrate: unprivileged role"
+  psql_on postgres18 -c "CREATE DATABASE migrate_unprivileged OWNER migrate_unprivileged;" ||
+    fail "postgresql_migrate: unprivileged database"
+  # An unprivileged user cannot read another role's large object; use a table-only source.
+  migrate_image "$image" "${env[@]}" -e POSTGRES_HOST=postgres15 -e POSTGRES_DB=migrate_upgrade \
+    -e DEST_POSTGRES_DB=migrate_unprivileged -e DEST_POSTGRES_USER=migrate_unprivileged \
+    -e DEST_POSTGRES_PASSWORD=example -e RESTORE_NO_OWNER=true >/dev/null || fail "postgresql_migrate: unprivileged no-owner"
+  migrate_pg_assert_rows postgres18 migrate_unprivileged '15:upgrade' 'unprivileged no-owner'
+  [[ "$(psql_on postgres18 -d migrate_unprivileged -c "SELECT tableowner FROM pg_tables WHERE tablename='migrate_rows';")" == migrate_unprivileged ]] ||
+    fail "postgresql_migrate: no-owner table owner differs"
+  [[ "$(psql_on postgres18 -d migrate_unprivileged -c "SELECT rolsuper FROM pg_roles WHERE rolname='migrate_unprivileged';")" == f ]] ||
+    fail "postgresql_migrate: destination role unexpectedly privileged"
+  pass "postgresql_migrate: existing empty database works with unprivileged no-owner"
+}
+
+mongo_migrate_eval() {
+  local service="$1"
+  shift
+  if [[ "$service" == mongo_destination ]]; then
+    "${COMPOSE[@]}" exec -T "$service" mongosh --quiet -u destination_root -p destination_password \
+      --authenticationDatabase admin --eval "$1"
+  else
+    "${COMPOSE[@]}" exec -T "$service" mongosh --quiet -u root -p secret \
+      --authenticationDatabase admin --eval "$1"
+  fi
+}
+
+mongo_migrate_assert_rows() {
+  local service="$1" database="$2" expected="$3" label="$4" actual
+  actual="$(mongo_migrate_eval "$service" "JSON.stringify(db.getSiblingDB('$database').widgets.find({},{_id:1,value:1}).sort({_id:1}).toArray())")" ||
+    fail "mongodb_migrate: ${label}: cannot query documents"
+  [[ "$actual" == "$expected" ]] || fail "mongodb_migrate: ${label}: expected '${expected}', got '${actual}'"
+}
+
+mongo_migrate_clear_destination() {
+  mongo_migrate_eval mongo_destination 'db.adminCommand({listDatabases:1}).databases.forEach(x=>{if(!["admin","config","local"].includes(x.name)) db.getSiblingDB(x.name).dropDatabase()})' >/dev/null ||
+    fail "mongodb_migrate: clear destination before full copy"
+}
+
+test_mongodb_migrate() {
+  local image=ghcr.io/quyendv/platform-backup/mongodb:latest
+  local source='mongodb://root:secret@mongo:27017/migrate_source?authSource=admin'
+  local destination='mongodb://destination_root:destination_password@mongo_destination:27017'
+  local env=(-e MONGODB_URI="$source") out rc inventory
+  local inventory_js='JSON.stringify(db.adminCommand({listDatabases:1}).databases.filter(x=>!["admin","config","local"].includes(x.name)).map(x=>({database:x.name,collections:db.getSiblingDB(x.name).getCollectionNames().sort().map(n=>({name:n,count:db.getSiblingDB(x.name).getCollection(n).countDocuments()}))})).sort((a,b)=>a.database.localeCompare(b.database)))'
+  local expected='[{"_id":1,"value":"alpha"},{"_id":2,"value":"beta"}]'
+  mongo_migrate_eval mongo 'db.getSiblingDB("migrate_source").widgets.insertMany([{_id:1,value:"alpha"},{_id:2,value:"beta"}])' >/dev/null ||
+    fail "mongodb_migrate: seed source"
+  migrate_image "$image" "${env[@]}" -e DEST_MONGODB_URI="${destination}/migrate_source?authSource=admin" >/dev/null ||
+    fail "mongodb_migrate: same-name copy"
+  mongo_migrate_assert_rows mongo_destination migrate_source "$expected" 'same name'
+  pass "mongodb_migrate: selected database copies with same name"
+
+  migrate_image "$image" "${env[@]}" -e DEST_MONGODB_URI="${destination}/migrate_renamed?authSource=admin" >/dev/null ||
+    fail "mongodb_migrate: rename"
+  mongo_migrate_assert_rows mongo_destination migrate_renamed "$expected" 'rename'
+  mongo_migrate_assert_rows mongo migrate_source "$expected" 'rename source intact'
+  pass "mongodb_migrate: rename copies actual namespaces"
+
+  mongo_migrate_eval mongo_destination 'db.getSiblingDB("migrate_auth").createUser({user:"database_writer",pwd:"example",roles:[{role:"restore",db:"admin"},{role:"read",db:"migrate_auth"}]})' >/dev/null ||
+    fail "mongodb_migrate: create database-local destination user"
+  migrate_image "$image" "${env[@]}" \
+    -e DEST_MONGODB_URI='mongodb://database_writer:example@mongo_destination:27017/migrate_auth' >/dev/null ||
+    fail "mongodb_migrate: own user without authSource"
+  mongo_migrate_assert_rows mongo_destination migrate_auth "$expected" 'own user without authSource'
+  [[ "$(mongo_migrate_eval mongo_destination 'db.getSiblingDB("migrate_auth").getUser("database_writer").user')" == database_writer ]] ||
+    fail "mongodb_migrate: database-local user disappeared"
+  pass "mongodb_migrate: removing destination path preserves authentication database"
+
+  mongo_migrate_eval mongo_destination 'db.getSiblingDB("migrate_renamed").widgets.insertOne({_id:99,value:"keep"})' >/dev/null ||
+    fail "mongodb_migrate: seed refusal sentinel"
+  rc=0
+  out="$(migrate_image "$image" "${env[@]}" -e DEST_MONGODB_URI="${destination}/migrate_renamed?authSource=admin" 2>&1)" || rc=$?
+  [[ "$rc" -ne 0 && "$out" == *non-empty* ]] || fail "mongodb_migrate: nonempty destination accepted"
+  mongo_migrate_assert_rows mongo_destination migrate_renamed \
+    '[{"_id":1,"value":"alpha"},{"_id":2,"value":"beta"},{"_id":99,"value":"keep"}]' 'refusal intact'
+  pass "mongodb_migrate: refused nonempty destination retains every document"
+
+  rc=0
+  out="$(migrate_image "$image" -e MONGODB_URI='mongodb://root:secret@mongo:27017/migrate_missing?authSource=admin' \
+    -e DEST_MONGODB_URI="${destination}/migrate_missing?authSource=admin" 2>&1)" || rc=$?
+  [[ "$rc" -ne 0 && "$out" == *'source database'* ]] || fail "mongodb_migrate: missing source accepted"
+  [[ "$(mongo_migrate_eval mongo_destination 'db.getSiblingDB("migrate_missing").getCollectionNames().length')" == 0 ]] ||
+    fail "mongodb_migrate: missing source created collections"
+  pass "mongodb_migrate: missing source fails with an empty destination"
+
+  mongo_migrate_clear_destination
+  mongo_migrate_eval mongo_destination 'db.getSiblingDB("admin").createUser({user:"root",pwd:"previous_example",roles:["root"]})' >/dev/null ||
+    fail "mongodb_migrate: seed same-named destination user before full copy"
+  inventory="$(mongo_migrate_eval mongo "$inventory_js")" || fail "mongodb_migrate: read full source inventory"
+  migrate_image "$image" -e MONGODB_URI='mongodb://root:secret@mongo:27017/?authSource=admin' \
+    -e DEST_MONGODB_URI="${destination}/?authSource=admin" -e MONGODUMP_OPLOG=false >/dev/null ||
+    fail "mongodb_migrate: full copy onto own-root server"
+  mongo_migrate_assert_rows mongo_destination migrate_source "$expected" 'full copy'
+  [[ "$(mongo_migrate_eval mongo_destination "$inventory_js")" == "$inventory" ]] ||
+    fail "mongodb_migrate: full copy changed database or collection inventory and document counts"
+  [[ "$(mongo_migrate_eval mongo_destination 'db.getSiblingDB("admin").getUser("destination_root").user')" == destination_root ]] ||
+    fail "mongodb_migrate: full copy lost destination root"
+  [[ "$(mongo_migrate_eval mongo_destination 'db.getSiblingDB("admin").getUser("root").user')" == root ]] ||
+    fail "mongodb_migrate: full copy lost source root"
+  [[ "$("${COMPOSE[@]}" exec -T mongo_destination mongosh --quiet -u root -p secret --authenticationDatabase admin \
+    --eval 'db.adminCommand({ping:1}).ok' 2>/dev/null)" != 1 ]] || fail "mongodb_migrate: full copy replaced a same-named destination user"
+  [[ "$("${COMPOSE[@]}" exec -T mongo_destination mongosh --quiet -u root -p previous_example --authenticationDatabase admin \
+    --eval 'db.adminCommand({ping:1}).ok')" == 1 ]] || fail "mongodb_migrate: full copy lost a destination user's credentials"
+  pass "mongodb_migrate: full copy merges users and retains destination credentials of other names"
+
+  mongo_migrate_clear_destination
+  "${COMPOSE[@]}" exec -T mongors mongosh --quiet --eval \
+    'db.getSiblingDB("migrate_oplog").widgets.insertMany([{_id:1,value:"alpha"},{_id:2,value:"beta"}])' >/dev/null ||
+    fail "mongodb_migrate: replica-set seed"
+  inventory="$("${COMPOSE[@]}" exec -T mongors mongosh --quiet --eval "$inventory_js")" ||
+    fail "mongodb_migrate: read replica-set source inventory"
+  out="$(migrate_image "$image" -e MONGODB_URI='mongodb://mongors:27017/?replicaSet=rs0' \
+    -e DEST_MONGODB_URI="${destination}/?authSource=admin" 2>&1)" || fail "mongodb_migrate: oplog stream"
+  [[ "$out" == *replaying* ]] || fail "mongodb_migrate: oplog was not replayed"
+  mongo_migrate_assert_rows mongo_destination migrate_oplog "$expected" 'oplog copy'
+  [[ "$(mongo_migrate_eval mongo_destination "$inventory_js")" == "$inventory" ]] ||
+    fail "mongodb_migrate: oplog copy changed database or collection inventory and document counts"
+  pass "mongodb_migrate: replica-set full copy replays oplog and preserves rows"
+}
+
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql postgresql_owner postgresql_restore_scenarios postgresql_versions completeness mongodb mongodb_oplog redis vault sqlite files etcd schedule notify upload_failure)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql postgresql_owner postgresql_restore_scenarios postgresql_versions postgresql_migrate completeness mongodb mongodb_oplog mongodb_migrate redis vault sqlite files etcd schedule notify upload_failure)
 
   start_stack "${backends[@]}"
   local b
