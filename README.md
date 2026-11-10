@@ -10,13 +10,13 @@ restore its own data.
 
 | Image | Release tags | Moving tags |
 |---|---|---|
-| `ghcr.io/quyendv/platform-backup/postgresql` | `0.8.0-pg15` … `0.8.0-pg18` | `pg15` `pg16` `pg17` `pg18` `latest` (= pg18) |
-| `ghcr.io/quyendv/platform-backup/mongodb` | `0.8.0` | `latest` |
-| `ghcr.io/quyendv/platform-backup/etcd` | `0.8.0` | `latest` |
-| `ghcr.io/quyendv/platform-backup/vault` | `0.8.0` | `latest` |
-| `ghcr.io/quyendv/platform-backup/redis` | `0.8.0-redis7` `0.8.0-redis8` | `redis7` `redis8` `latest` (= redis8) |
-| `ghcr.io/quyendv/platform-backup/sqlite` | `0.8.0` | `latest` |
-| `ghcr.io/quyendv/platform-backup/files` | `0.8.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/postgresql` | `0.9.0-pg15` … `0.9.0-pg18` | `pg15` `pg16` `pg17` `pg18` `latest` (= pg18) |
+| `ghcr.io/quyendv/platform-backup/mongodb` | `0.9.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/etcd` | `0.9.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/vault` | `0.9.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/redis` | `0.9.0-redis7` `0.9.0-redis8` | `redis7` `redis8` `latest` (= redis8) |
+| `ghcr.io/quyendv/platform-backup/sqlite` | `0.9.0` | `latest` |
+| `ghcr.io/quyendv/platform-backup/files` | `0.9.0` | `latest` |
 
 Release tags never move. Moving tags are rebuilt on every push to `main`, so
 they can carry unreleased changes: pin a release tag for anything you depend
@@ -76,7 +76,8 @@ it builds the images from this checkout.
 
 ## Modes
 
-`MODE` has exactly one meaning per value.
+`MODE` has exactly one meaning per value. Each database backend's README has a table
+of restore scenarios.
 
 | Mode | What it does | postgresql | mongodb | redis | vault | etcd | sqlite | files |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|

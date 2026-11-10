@@ -115,6 +115,16 @@ connection cannot be detected from another process; an application left
 running keeps writing to the replaced file. If a controller heals replicas, a
 GitOps tool with self-heal for instance, suspend it before scaling down.
 
+Every case below points `S3_PREFIX` at the backup being restored.
+`RESTORE_TIMESTAMP` picks a run (default: newest; see
+[the main README](../../README.md#environment) for the exact format).
+
+| Scenario | Set | Notes |
+|---|---|---|
+| Same-file rollback | `MODE=restore SQLITE_PATH=/data/app.db` | Replaces the file after an integrity check; keeps the previous database and its journal files aside. Copies the previous file's owner and mode where permitted. |
+| New/empty volume | `MODE=restore SQLITE_PATH=/data/app.db` | The parent directory must already exist. With no previous file, mode is `0664`; check the owner before restarting the application. |
+| Different filename or target volume | `MODE=restore SQLITE_PATH=/data/copy.db`; mount the target volume | Restores one database file at that path. A symlink replaces the file it points to. Attached databases and other files are not included. |
+
 Restore, stopping at the first failure:
 
 1. Decompresses next to the database and runs `integrity_check` on it.

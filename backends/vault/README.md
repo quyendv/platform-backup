@@ -294,6 +294,17 @@ to the agent's role, and never leave a restore-capable token mounted in a
 scheduled job. Use a privileged token for the one run, by hand, and revoke it
 afterwards.
 
+Every case below points `S3_PREFIX` at the backup being restored.
+`RESTORE_TIMESTAMP` picks a run (default: newest; see
+[the main README](../../README.md#environment) for the exact format).
+Set `MODE=restore` and quiesce clients before replacing the Raft state.
+
+| Scenario | Set | Notes |
+|---|---|---|
+| Same-cluster rollback | `VAULT_ADDR=https://vault.example.com VAULT_TOKEN=<privileged-token>` | Replaces the entire Raft state: data, mounts, policies and auth methods. Changes since the snapshot are lost. |
+| New target using Raft integrated storage | Point `VAULT_ADDR` at the running target and supply a privileged `VAULT_TOKEN` | The adapter always uses `-force`. Restoring into another cluster brings the snapshot's keyring; unseal with the snapshot's keys. |
+| Different cluster or target | Change `VAULT_ADDR` and supply the target's privileged `VAULT_TOKEN` | Replaces the whole state; there is no selective restore or rename option. Auth credentials created after the snapshot may need to be issued again. |
+
 Docker, with the same `.env`:
 
 ```bash

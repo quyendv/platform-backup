@@ -518,6 +518,7 @@ printf '%s\n' "\$*" >>"$BATS_TEST_TMPDIR/cli.log"
 for a in "\$@"; do
   [[ "\$a" == "ping" ]] && { echo PONG; exit 0; }
   [[ "\$a" == "--scan" ]] && { echo k1; exit 0; }
+  [[ "\$a" == "dbsize" ]] && { echo 1; exit 0; }
 done
 echo OK
 STUB
@@ -533,6 +534,30 @@ STUB
   grep -qE -- '-n 3 MIGRATE cache 6379  3 ' "$BATS_TEST_TMPDIR/cli.log"
 }
 
+@test "a backup with no keys in the target database is refused before any flush" {
+  cat >"$STUB_BIN/redis-cli" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$BATS_TEST_TMPDIR/cli.log"
+for a in "\$@"; do
+  [[ "\$a" == "ping" ]] && { echo PONG; exit 0; }
+  [[ "\$a" == "dbsize" ]] && { echo 0; exit 0; }
+done
+echo OK
+STUB
+  chmod +x "$STUB_BIN/redis-cli"
+  stub_live_server
+  export REDIS_URL=redis://cache:6379/3 RESTORE_FLUSH=true BACKUP_DIR="$BATS_TEST_TMPDIR"
+  printf 'x' | gzip -c >"$WORK/a.rdb.gz"
+
+  run backend_restore "$WORK/a.rdb.gz"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no keys in database 3"* ]]
+  run grep -iE 'flushdb|migrate' "$BATS_TEST_TMPDIR/cli.log"
+  [ "$status" -eq 1 ]
+  assert_gone "$(cat "$BATS_TEST_TMPDIR/server.pid")"
+}
+
 @test "a disabled FLUSHDB is reported as such, not as a mystery" {
   # The Bitnami chart renames FLUSHDB and FLUSHALL to "" by default, so
   # RESTORE_FLUSH fails there with "unknown command" and no hint why.
@@ -540,6 +565,7 @@ STUB
 #!/usr/bin/env bash
 for a in "$@"; do
   [[ "$a" == "ping" ]] && { echo PONG; exit 0; }
+  [[ "$a" == "dbsize" ]] && { echo 1; exit 0; }
   [[ "$a" == "flushdb" ]] && { echo "ERR unknown command 'flushdb'" >&2; exit 1; }
 done
 exit 0

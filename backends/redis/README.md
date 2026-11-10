@@ -58,6 +58,26 @@ Restore is different: see below.
 
 ## Restore
 
+Every case below points `S3_PREFIX` at the backup being restored.
+`RESTORE_TIMESTAMP` picks a run (default: newest; see
+[the main README](../../README.md#environment) for the exact format).
+Set `MODE=restore` and quiesce clients first.
+
+| Scenario | Set | Notes |
+|---|---|---|
+| Same-database rollback | `REDIS_URL=redis://cache.example.com:6379/0 RESTORE_FLUSH=true` | Empties target database 0, then moves keys from database 0 in the RDB, preserving types and TTLs. |
+| New/empty server | `REDIS_URL=redis://new.example.com:6379/0` | Moves keys from the URL's numbered database in the RDB into the same number on the target. No ACLs or server configuration are in an RDB. |
+| Different server, same database number | Change the host in `REDIS_URL`, keeping the source database number | Existing keys are replaced; keys absent from the backup stay unless `RESTORE_FLUSH=true`. |
+| Different database number | No mapping option | Changing `/0` to `/3` selects database 3 in the backup and database 3 on the target; it does not copy database 0 to database 3. |
+
+**If the backup has no keys in the URL's numbered database, restore fails
+before changing anything,** including with `RESTORE_FLUSH=true`.
+
+Permissions: the restore connection must be allowed to write the target keys;
+`RESTORE_FLUSH=true` also needs `FLUSHDB`, which some platforms disable. An
+offline restore needs write access to the server's data directory and restart
+rights; the online path below needs neither.
+
 ```bash
 docker run --rm \
   -e MODE=restore -e RESTORE_FLUSH=true \
@@ -248,7 +268,7 @@ docker compose run --rm -e MODE=restore -e RESTORE_FLUSH=true restore
 ```
 
 Size the `/backup` volume as described under [Sizing](#sizing), and match the
-image tag to the server (`0.8.0-redis7`, `0.8.0-redis8`) as described under
+image tag to the server (`0.9.0-redis7`, `0.9.0-redis8`) as described under
 [Choosing a tag](#choosing-a-tag). For a large dataset, prefer the
 [offline restore](#offline-restore-docker) over `MODE=restore`.
 

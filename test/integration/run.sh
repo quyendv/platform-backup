@@ -65,7 +65,7 @@ services_for() {
     notify) printf 'postgres notifysink' ;;
     mongodb) printf 'mongo' ;;
     mongodb_oplog) printf 'mongors' ;;
-    postgresql_owner | completeness) printf 'postgres' ;;
+    postgresql_owner | postgresql_restore_scenarios | completeness) printf 'postgres' ;;
     postgresql_versions) printf 'postgres15 postgres18' ;;
     redis) printf 'redis' ;;
     vault) printf 'vault' ;;
@@ -246,6 +246,92 @@ test_postgresql_owner() {
   pass "postgresql_owner: restore applied the globals and the data"
 }
 
+test_postgresql_restore_scenarios() {
+  local image=ghcr.io/quyendv/platform-backup/postgresql:pg17
+  local prefix=it/postgresql-restore-scenarios
+  local env=(-e POSTGRES_HOST=postgres -e POSTGRES_PORT=5432
+    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=secret)
+  local properties settings out rc
+  local properties_sql="SELECT pg_get_userbyid(datdba), pg_encoding_to_char(encoding),
+    datcollate, datctype, (SELECT string_agg(a::text, ',' ORDER BY a::text) FROM unnest(datacl) a)
+    FROM pg_database WHERE datname='scenario_source';"
+  local settings_sql="SELECT COALESCE(r.rolname, '<database>'), s.setconfig::text
+    FROM pg_db_role_setting s LEFT JOIN pg_roles r ON r.oid=s.setrole
+    WHERE s.setdatabase=(SELECT oid FROM pg_database WHERE datname='scenario_source')
+    ORDER BY r.rolname NULLS FIRST;"
+
+  info "postgresql_restore_scenarios: database properties, grants and settings"
+  psql_target -c "CREATE ROLE scenario_owner; CREATE ROLE scenario_reader;"
+  psql_target -c "CREATE DATABASE scenario_source OWNER scenario_owner ENCODING 'LATIN1' LOCALE 'C' TEMPLATE template0;"
+  psql_target -c "REVOKE CONNECT ON DATABASE scenario_source FROM PUBLIC;
+    GRANT CONNECT ON DATABASE scenario_source TO scenario_reader;
+    ALTER DATABASE scenario_source SET work_mem='8MB';
+    ALTER ROLE scenario_reader IN DATABASE scenario_source SET statement_timeout='5s';"
+  psql_target -d scenario_source -c "SET ROLE scenario_owner;
+    CREATE TABLE scenario_rows (id int primary key, value text);
+    INSERT INTO scenario_rows VALUES (1,'alpha'),(2,'beta');
+    GRANT SELECT ON scenario_rows TO scenario_reader;"
+  properties="$(psql_target -c "$properties_sql")"
+  settings="$(psql_target -c "$settings_sql")"
+  backup_image "$image" backup "$prefix" "${env[@]}" -e POSTGRES_DB=scenario_source >/dev/null ||
+    fail "postgresql_restore_scenarios: backup failed"
+
+  psql_target -c "DROP DATABASE scenario_source;"
+  psql_target -c "DROP ROLE scenario_reader; DROP ROLE scenario_owner;"
+  backup_image "$image" restore "$prefix" "${env[@]}" -e POSTGRES_DB=scenario_source \
+    -e RESTORE_DROP=true -e RESTORE_CREATE=true -e RESTORE_GLOBALS=true >/dev/null ||
+    fail "postgresql_restore_scenarios: recreate with globals failed"
+  [[ "$(psql_target -c "$properties_sql")" == "$properties" ]] ||
+    fail "postgresql_restore_scenarios: owner, encoding, locale or datacl changed"
+  [[ "$(psql_target -c "$settings_sql")" == "$settings" ]] ||
+    fail "postgresql_restore_scenarios: database or role-in-database settings changed"
+  [[ "$(psql_target -d scenario_source -c 'SELECT count(*) FROM scenario_rows;')" == 2 ]] ||
+    fail "postgresql_restore_scenarios: recreated database lost rows"
+  pass "postgresql_restore_scenarios: create restores database properties, settings and rows"
+
+  rc=0
+  out="$(backup_image "$image" restore "$prefix" "${env[@]}" -e POSTGRES_DB=scenario_copy \
+    -e RESTORE_CREATE=true -e RESTORE_DROP=true 2>&1)" || rc=$?
+  [[ "$rc" -ne 0 && "$out" == *'unset RESTORE_CREATE'* ]] ||
+    fail "postgresql_restore_scenarios: create accepted another name: ${out}"
+  [[ "$(psql_target -d scenario_source -c 'SELECT count(*) FROM scenario_rows;')" == 2 ]] ||
+    fail "postgresql_restore_scenarios: name mismatch changed the source rows"
+  [[ "$(psql_target -c "SELECT count(*) FROM pg_database WHERE datname='scenario_copy';")" == 0 ]] ||
+    fail "postgresql_restore_scenarios: name mismatch created the copy"
+  pass "postgresql_restore_scenarios: name mismatch leaves the source intact"
+
+  rc=0
+  out="$(backup_image "$image" restore "$prefix" "${env[@]}" -e POSTGRES_DB=scenario_source \
+    -e RESTORE_CREATE=true 2>&1)" || rc=$?
+  [[ "$rc" -ne 0 && "$out" == *'RESTORE_DROP=true'* ]] ||
+    fail "postgresql_restore_scenarios: create accepted an existing database: ${out}"
+  [[ "$(psql_target -d scenario_source -c 'SELECT count(*) FROM scenario_rows;')" == 2 ]] ||
+    fail "postgresql_restore_scenarios: existing database guard changed rows"
+  pass "postgresql_restore_scenarios: existing database is refused without drop"
+
+  backup_image "$image" restore "$prefix" "${env[@]}" -e POSTGRES_DB=scenario_copy \
+    -e RESTORE_DROP=true >/dev/null || fail "postgresql_restore_scenarios: copy failed"
+  [[ "$(psql_target -d scenario_copy -c 'SELECT count(*) FROM scenario_rows;')" == 2 ]] ||
+    fail "postgresql_restore_scenarios: copy lost rows"
+  [[ "$(psql_target -d scenario_source -c 'SELECT count(*) FROM scenario_rows;')" == 2 ]] ||
+    fail "postgresql_restore_scenarios: copy changed the source rows"
+  [[ "$(psql_target -c "$properties_sql")" == "$properties" && "$(psql_target -c "$settings_sql")" == "$settings" ]] ||
+    fail "postgresql_restore_scenarios: copy changed the source database properties"
+  pass "postgresql_restore_scenarios: plain drop copies rows under another name"
+
+  psql_target -c "CREATE ROLE scenario_unprivileged LOGIN CREATEDB PASSWORD 'example';"
+  psql_target -c "CREATE DATABASE scenario_empty OWNER scenario_unprivileged;"
+  backup_image "$image" restore "$prefix" -e POSTGRES_HOST=postgres -e POSTGRES_PORT=5432 \
+    -e POSTGRES_USER=scenario_unprivileged -e POSTGRES_PASSWORD=example \
+    -e POSTGRES_DB=scenario_empty -e RESTORE_NO_OWNER=true >/dev/null ||
+    fail "postgresql_restore_scenarios: unprivileged restore failed"
+  [[ "$(psql_target -d scenario_empty -c 'SELECT count(*) FROM scenario_rows;')" == 2 ]] ||
+    fail "postgresql_restore_scenarios: unprivileged restore lost rows"
+  [[ "$(psql_target -d scenario_empty -c "SELECT tableowner FROM pg_tables WHERE tablename='scenario_rows';")" == scenario_unprivileged ]] ||
+    fail "postgresql_restore_scenarios: restored table is not owned by the restoring role"
+  pass "postgresql_restore_scenarios: no-owner restores as an unprivileged role"
+}
+
 # An upload that dies before its marker leaves objects that look like a run.
 # Restore must skip it and take the newest run that finished.
 test_completeness() {
@@ -325,6 +411,24 @@ test_mongodb() {
   count="$(mongo_eval 'db.widgets.countDocuments()' | tr -d '[:space:]')"
   [[ "$count" == "3" ]] || fail "mongodb: expected 3 documents after restore, got '${count}'"
   pass "mongodb: data survived backup -> restore"
+
+  local out rc=0
+  out="$(backup_image "$image" restore "$prefix" \
+    -e MONGODB_URI="mongodb://root:secret@mongo:27017/nosuchdb?authSource=admin" 2>&1)" || rc=$?
+  [[ "$rc" -ne 0 && "$out" == *"restored nothing"* ]] ||
+    fail "mongodb: a URI naming another database did not fail: ${out}"
+  count="$(mongo_eval 'db.widgets.countDocuments()' | tr -d '[:space:]')"
+  [[ "$count" == "3" ]] || fail "mongodb: the refused restore changed the data, got '${count}'"
+  pass "mongodb: a URI naming another database fails instead of restoring nothing"
+
+  local one=(-e MONGODB_URI="mongodb://root:secret@mongo:27017/appdb?authSource=admin")
+  backup_image "$image" backup "$prefix-one" "${one[@]}" >/dev/null
+  mongo_eval 'db.widgets.drop()' >/dev/null
+  backup_image "$image" restore "$prefix-one" "${one[@]}" >/dev/null ||
+    fail "mongodb: restoring a one-database dump to its own name failed"
+  count="$(mongo_eval 'db.widgets.countDocuments()' | tr -d '[:space:]')"
+  [[ "$count" == "3" ]] || fail "mongodb: expected 3 documents in the one-database restore, got '${count}'"
+  pass "mongodb: a one-database dump restores under its own name"
 }
 
 # A replica-set member: the dump takes an oplog, so it is one point in time,
@@ -511,6 +615,17 @@ test_redis() {
     -e S3_BUCKET="$BUCKET" -e S3_PREFIX="$prefix" -e REDIS_URL=redis://nowhere:6379 \
     "$image" >/dev/null 2>&1 || fail "redis: fetch needed a reachable server"
   pass "redis: fetch works with no server to reach"
+
+  redis_exec -n 5 set bystander kept >/dev/null
+  local out rc=0
+  out="$(backup_image "$image" restore "$prefix" -e REDIS_URL="redis://:secret@redis:6379/5" \
+    -e RESTORE_FLUSH=true 2>&1)" || rc=$?
+  [[ "$rc" -ne 0 && "$out" == *"no keys in database 5"* ]] ||
+    fail "redis: a database the backup lacks did not fail: ${out}"
+  [[ "$(redis_exec -n 5 get bystander | tr -d '\r')" == "kept" ]] ||
+    fail "redis: the refused restore flushed the target"
+  redis_exec -n 5 del bystander >/dev/null
+  pass "redis: a database the backup lacks is refused before any flush"
 
   test_redis_slow_load "$image" "$prefix-slow" "${env[@]}"
   redis_tooling ghcr.io/quyendv/platform-backup/redis:redis8
@@ -965,7 +1080,7 @@ test_etcd() {
 
 main() {
   local backends=("${@:-}")
-  [[ -n "${backends[0]:-}" ]] || backends=(postgresql postgresql_owner postgresql_versions completeness mongodb mongodb_oplog redis vault sqlite files etcd schedule notify upload_failure)
+  [[ -n "${backends[0]:-}" ]] || backends=(postgresql postgresql_owner postgresql_restore_scenarios postgresql_versions completeness mongodb mongodb_oplog redis vault sqlite files etcd schedule notify upload_failure)
 
   start_stack "${backends[@]}"
   local b
