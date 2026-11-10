@@ -9,6 +9,12 @@ between minor versions. Each change will be listed here with its migration.
 
 ## [Unreleased]
 
+### Fixed
+
+- **postgresql: the readiness probe names the database.** Without `-d`, a user
+  with no database of its own name left a `FATAL` in the server's log on every
+  run. Backups themselves were never affected.
+
 ## [0.8.0] — 2026-10-24
 
 ### Changed

@@ -50,6 +50,23 @@ STUB
   [[ "$output" == *"pg_dump failed"* ]]
 }
 
+@test "postgresql probes the database being backed up, not one named after the user" {
+  source "$REPO_ROOT/backends/postgresql/backend.sh"
+  export POSTGRES_HOST=h POSTGRES_PORT=5432 POSTGRES_USER=some-user POSTGRES_DB=other-db
+  cat >"$STUB_BIN/pg_isready" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >"$WORK/pg_isready.args"
+STUB
+  chmod +x "$STUB_BIN/pg_isready"
+  stub pg_dump 1
+
+  run backend_dump "$WORK"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"pg_dump failed"* ]]
+  [[ " $(cat "$WORK/pg_isready.args") " == *" -d other-db "* ]]
+}
+
 @test "mongodb fails when mongodump fails" {
   source "$REPO_ROOT/backends/mongodb/backend.sh"
   export MONGODB_URI=mongodb://x
